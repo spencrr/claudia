@@ -1,6 +1,6 @@
 {
   "name": "claudia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenAI-compatible local proxy that routes model calls through your GitHub Copilot subscription",
   "type": "module",
   "private": true,

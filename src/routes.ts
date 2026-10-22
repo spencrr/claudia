@@ -1,113 +1,24 @@
-import type { Config } from './config.ts';
-import type { UpstreamSession } from './github.ts';
-import type { Logger } from './log.ts';
-
-export const VERSION = '0.1.0';
-
-/** Inbound request, already decoupled from Node's `http` so handlers are unit-testable. */
-export interface ProxyRequest {
-	readonly method: string;
-	/** Path with any leading `/v1` already stripped, e.g. `/chat/completions`. */
-	readonly path: string;
-	readonly headers: Headers;
-	readonly body: () => Promise<string>;
-	/** Aborts when the client disconnects. */
-	readonly signal: AbortSignal;
-}
-
-export interface ProxyContext {
-	readonly config: Config;
-	readonly session: UpstreamSession;
-	readonly log: Logger;
-	readonly requestId: string;
-	readonly fetch: typeof globalThis.fetch;
-}
-
-export type RouteHandler = (request: ProxyRequest, ctx: ProxyContext) => Promise<Response>;
-
-export interface Route {
-	readonly method: 'GET' | 'POST';
-	readonly path: string;
-	readonly handler: RouteHandler;
-}
+import { getCatalog, type CapiModel } from './catalog.ts';
+import { countTokens, createMessagesHandler } from './messages.ts';
+import { passthrough, type ProxyContext, type ProxyRequest, type Route } from './proxy.ts';
 
 /**
  * The extension point: one line per API surface. CAPI speaks both the OpenAI
- * and Anthropic wire formats natively, so routes are plain passthroughs — add
- * a handler only when translation is really needed.
+ * and Anthropic wire formats natively, so most routes are plain passthroughs;
+ * `/messages` adds cross-vendor translation and local hosted tools.
  */
 export const routes: readonly Route[] = [
 	{ method: 'GET', path: '/models', handler: listModels },
 	// OpenAI
 	{ method: 'POST', path: '/chat/completions', handler: passthrough('/chat/completions') },
 	{ method: 'POST', path: '/responses', handler: passthrough('/responses') },
-	// Anthropic Messages API (Claude Code, Anthropic SDKs). CAPI keeps the /v1 prefix here.
-	{ method: 'POST', path: '/messages', handler: passthrough('/v1/messages') },
-	{ method: 'POST', path: '/messages/count_tokens', handler: passthrough('/v1/messages/count_tokens') },
+	// Anthropic Messages API (Claude Code, Anthropic SDKs) for every catalog model.
+	{ method: 'POST', path: '/messages', handler: createMessagesHandler() },
+	{ method: 'POST', path: '/messages/count_tokens', handler: countTokens },
 ];
 
-/** Inbound headers relayed upstream. Anthropic clients version and feature-gate requests through these. */
-const RELAYED_REQUEST_HEADERS = ['anthropic-version', 'anthropic-beta'];
-
-/** Forward the JSON body byte-for-byte to `${apiUrl}${upstreamPath}`, returning CAPI's response as-is. */
-export function passthrough(upstreamPath: string): RouteHandler {
-	return async (request, ctx) => {
-		const body = await request.body();
-		ctx.log.debug(`[${ctx.requestId}] → POST ${upstreamPath} model=${peekModel(body) ?? '?'}`);
-		const headers: Record<string, string> = { ...upstreamHeaders(ctx), 'Content-Type': 'application/json' };
-		for (const name of RELAYED_REQUEST_HEADERS) {
-			const value = request.headers.get(name);
-			if (value) {
-				headers[name] = value;
-			}
-		}
-		return ctx.fetch(`${ctx.session.apiUrl}${upstreamPath}`, {
-			method: 'POST',
-			headers,
-			body,
-			signal: request.signal,
-		});
-	};
-}
-
 export async function listModels(request: ProxyRequest, ctx: ProxyContext): Promise<Response> {
-	const upstream = await ctx.fetch(`${ctx.session.apiUrl}/models`, {
-		headers: upstreamHeaders(ctx),
-		signal: request.signal,
-	});
-	if (!upstream.ok) {
-		return upstream;
-	}
-	const { data = [] } = await upstream.json() as { data?: CapiModel[] };
-	return Response.json(toOpenAIModelList(data));
-}
-
-/**
- * Headers for every upstream call. Only `Authorization` is required by CAPI;
- * the rest identify this client honestly and pin the API version.
- */
-export function upstreamHeaders(ctx: ProxyContext): Record<string, string> {
-	const headers: Record<string, string> = {
-		'Authorization': `Bearer ${ctx.session.token}`,
-		'User-Agent': `claudia/${VERSION}`,
-		'X-Request-Id': ctx.requestId,
-		'X-GitHub-Api-Version': '2026-08-01',
-		'OpenAI-Intent': 'conversation',
-	};
-	if (ctx.config.integrationId) {
-		headers['Copilot-Integration-Id'] = ctx.config.integrationId;
-	}
-	return headers;
-}
-
-/** Subset of CAPI's `/models` entry we rely on. */
-export interface CapiModel {
-	readonly id: string;
-	readonly name?: string;
-	readonly vendor?: string;
-	readonly version?: string;
-	readonly capabilities?: { readonly type?: string };
-	readonly supported_endpoints?: readonly string[];
+	return Response.json(toOpenAIModelList(await getCatalog(ctx, request.signal)));
 }
 
 export interface OpenAIModel {
@@ -131,13 +42,4 @@ export function toOpenAIModelList(models: readonly CapiModel[]): { object: 'list
 		}))
 		.sort((a, b) => a.id.localeCompare(b.id));
 	return { object: 'list', data };
-}
-
-function peekModel(body: string): string | undefined {
-	try {
-		const model = (JSON.parse(body) as { model?: unknown }).model;
-		return typeof model === 'string' ? model : undefined;
-	} catch {
-		return undefined;
-	}
 }

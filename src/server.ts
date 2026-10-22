@@ -6,7 +6,8 @@ import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import type { Config } from './config.ts';
 import type { UpstreamResolver } from './github.ts';
 import type { Logger } from './log.ts';
-import { routes as defaultRoutes, type ProxyRequest, type Route } from './routes.ts';
+import type { ProxyRequest, Route } from './proxy.ts';
+import { routes as defaultRoutes } from './routes.ts';
 
 export interface ServerOptions {
 	readonly config: Config;
@@ -67,11 +68,13 @@ export function createServer(options: ServerOptions): http.Server {
 		if (!route) {
 			return errorResponse(405, 'invalid_request_error', `${method} not allowed on ${path}`);
 		}
+		let body: Promise<string> | undefined;
 		const request: ProxyRequest = {
 			method,
 			path,
 			headers: new Headers(req.headers as Record<string, string>),
-			body: () => readBody(req),
+			// Memoized so a handler can inspect the body and still delegate to a passthrough.
+			body: () => body ??= readBody(req),
 			signal,
 		};
 		const session = await upstream.get();

@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { loadConfig } from '../src/config.ts';
 import { silentLogger } from '../src/log.ts';
-import { toOpenAIModelList, upstreamHeaders, type CapiModel, type ProxyContext } from '../src/routes.ts';
+import type { CapiModel } from '../src/catalog.ts';
+import { upstreamHeaders, type ProxyContext } from '../src/proxy.ts';
+import { toOpenAIModelList } from '../src/routes.ts';
 
 function context(overrides: Partial<ProxyContext> = {}): ProxyContext {
 	return {
