@@ -264,6 +264,9 @@ export async function* chatToEvents(frames: AsyncIterable<SseFrame>, model: stri
 
 // #region Responses
 
+/** The Responses API rejects `max_output_tokens` below 16; Claude Code verifies a model switch with a `max_tokens: 1` probe. */
+const MIN_RESPONSES_OUTPUT_TOKENS = 16;
+
 export function toResponsesRequest(req: MessagesRequest): Record<string, unknown> {
 	const input: unknown[] = [];
 	for (const message of req.messages) {
@@ -316,7 +319,7 @@ export function toResponsesRequest(req: MessagesRequest): Record<string, unknown
 		...(system ? { instructions: system } : {}),
 		input,
 		...(tools.length > 0 ? { tools, ...toolChoiceFor(req, name => ({ type: 'function', name })) } : {}),
-		max_output_tokens: req.max_tokens,
+		max_output_tokens: Math.max(req.max_tokens, MIN_RESPONSES_OUTPUT_TOKENS),
 		...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
 		...(req.top_p !== undefined ? { top_p: req.top_p } : {}),
 		...(effort ? { reasoning: { effort } } : {}),

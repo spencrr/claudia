@@ -28,6 +28,8 @@ export interface OpenAIModel {
 	readonly owned_by: string;
 	/** Non-standard hint: CAPI paths this model answers on. Empty means `/chat/completions`. */
 	readonly supported_endpoints: readonly string[];
+	/** Non-standard: context window in tokens, when CAPI reports one (feeds `CLAUDE_CODE_MAX_CONTEXT_TOKENS`). */
+	readonly context_window?: number;
 }
 
 export function toOpenAIModelList(models: readonly CapiModel[]): { object: 'list'; data: OpenAIModel[] } {
@@ -39,6 +41,7 @@ export function toOpenAIModelList(models: readonly CapiModel[]): { object: 'list
 			created: 0,
 			owned_by: (m.vendor ?? 'unknown').toLowerCase().replace(/\s+/g, '-'),
 			supported_endpoints: m.supported_endpoints ?? [],
+			...(m.capabilities?.limits?.max_context_window_tokens ? { context_window: m.capabilities.limits.max_context_window_tokens } : {}),
 		}))
 		.sort((a, b) => a.id.localeCompare(b.id));
 	return { object: 'list', data };

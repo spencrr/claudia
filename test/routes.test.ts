@@ -19,7 +19,7 @@ function context(overrides: Partial<ProxyContext> = {}): ProxyContext {
 
 describe('toOpenAIModelList', () => {
 	const models: CapiModel[] = [
-		{ id: 'gpt-5.6-sol', vendor: 'OpenAI', capabilities: { type: 'chat' }, supported_endpoints: ['/responses', 'ws:/responses'] },
+		{ id: 'gpt-5.6-sol', vendor: 'OpenAI', capabilities: { type: 'chat', limits: { max_context_window_tokens: 1050000 } }, supported_endpoints: ['/responses', 'ws:/responses'] },
 		{ id: 'claude-sonnet-5.5', vendor: 'Anthropic', capabilities: { type: 'chat' }, supported_endpoints: ['/v1/messages', '/chat/completions'] },
 		{ id: 'gpt-4.1', vendor: 'Azure OpenAI', capabilities: { type: 'chat' } },
 		{ id: 'text-embedding-3-small', vendor: 'Azure OpenAI', capabilities: { type: 'embeddings' } },
@@ -41,6 +41,8 @@ describe('toOpenAIModelList', () => {
 		assert.equal(byId['gpt-4.1']?.owned_by, 'azure-openai');
 		assert.deepEqual(byId['gpt-4.1']?.supported_endpoints, []);
 		assert.deepEqual(byId['gpt-5.6-sol']?.supported_endpoints, ['/responses', 'ws:/responses']);
+		assert.equal(byId['gpt-5.6-sol']?.context_window, 1050000);
+		assert.equal('context_window' in (byId['gpt-4.1'] ?? {}), false);
 	});
 });
 

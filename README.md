@@ -73,10 +73,9 @@ omit it and lose those models.
 Claude Code talks to whatever `ANTHROPIC_BASE_URL` points at, so it only needs
 env vars — no plugin. Any catalog model works, Claude or not. Its default model
 (`claude-fable-*`) is not in the Copilot catalog, so set one explicitly:
-`claude-sonnet-5-5`, `claude-opus-5-5`, `gpt-5.6-sol`, `gemini-4-argon`,
-`grok-4.7`, … For non-Claude models the CLI prints a one-line
-`unrecognized_model` notice on stderr and skips Claude-specific features such as
-adaptive thinking; everything else works.
+`claude-sonnet-5-5`, `claude-opus-5-5`, `gpt-6-astra`, `gemini-4-argon`,
+`grok-4.7`, … You can also switch mid-session with `/model <id>`; Claude Code
+verifies the id with a one-token probe through the proxy before accepting it.
 
 PowerShell:
 
@@ -89,6 +88,29 @@ $env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'     # no updater/telemetry c
 Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
 claude
 ```
+
+#### Non-Claude models
+
+Claude Code only has built-in knowledge of Claude ids, so with `gpt-6-astra`
+and friends it says so in two harmless ways:
+
+* `[claude-code:unrecognized_model] {"model":"gpt-6-astra",…}` on stderr — a
+  notice only; the request is still sent as configured.
+* A startup banner `Model "gpt-6-astra" isn't recognized · context assumed to be
+  200k tokens`. It can't look up the window, so it defaults to 200K and compacts
+  early. Tell it the real window (`context_window` on `GET /v1/models`):
+
+  ```powershell
+  $env:ANTHROPIC_MODEL = 'gpt-6-astra'
+  $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = '1050000'   # gpt-6-astra, gpt-5.6-*, gpt-6.1-sol
+  # 1000000 gpt-6-sol/luna, claude-*-5*;  1048576 gemini-*;  500000 grok-*;  400000 gpt-5.3-codex
+  ```
+
+  For ids that don't start with `claude-` the variable applies on its own and
+  the banner disappears.
+
+Claude-specific features (adaptive thinking, prompt caching hints, 1M-context
+betas) are simply skipped for other vendors; tools, images and streaming work.
 
 bash/zsh:
 

@@ -81,6 +81,11 @@ describe('toResponsesRequest', () => {
 		const body = toResponsesRequest({ ...request, output_config: { effort: 'low' } }) as Record<string, any>;
 		assert.deepEqual(body.reasoning, { effort: 'low' });
 	});
+
+	test("raises Claude Code's max_tokens:1 model probe to the Responses minimum", () => {
+		assert.equal((toResponsesRequest({ ...request, max_tokens: 1 }) as Record<string, any>).max_output_tokens, 16);
+		assert.equal((toResponsesRequest({ ...request, max_tokens: 4096 }) as Record<string, any>).max_output_tokens, 4096);
+	});
 });
 
 function frames(...payloads: (object | string)[]): AsyncIterable<SseFrame> {
