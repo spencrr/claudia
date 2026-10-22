@@ -28,7 +28,7 @@ OpenAI client ──▶ 127.0.0.1:4242/v1/chat/completions ──▶ https://api
 Requires Node ≥ 22.18 (runs TypeScript directly, no build step) and either a
 `GITHUB_TOKEN` or a signed-in [GitHub CLI](https://cli.github.com/).
 
-```sh
+```powershell
 npm install
 npm start
 # 2026-… info  Copilot session: login=you plan=enterprise api=https://api.enterprise.githubcopilot.com
@@ -43,28 +43,61 @@ await client.chat.completions.create({ model: 'claude-sonnet-5.5', messages: [{ 
 await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 ```
 
-`GET /v1/models` lists the chat models available to your account. Each entry
-carries a non-standard `supported_endpoints` hint — newer OpenAI models answer
-only on `/responses`, and CAPI returns a clear 400 if you pick the wrong one.
+### Models
+
+`GET /v1/models` lists every chat model your account can use — OpenAI, Anthropic,
+Google and experimental vendors alike. Each entry carries a non-standard
+`supported_endpoints` hint, because CAPI does **not** translate between vendor
+wire formats:
+
+| Model family | Works on |
+|---|---|
+| `claude-*` | `/v1/messages`, `/chat/completions` |
+| `gpt-5*`, `o*` | `/responses` only |
+| `gpt-4*`, `gemini-*`, `mai-*` | `/chat/completions` (empty hint = chat completions) |
+
+Picking the wrong one returns a clear 400 from CAPI
+(`unsupported_api_for_model`). Part of the catalog is only served when the
+`Copilot-Integration-Id` header is present, so claudia sends `vscode-chat` by
+default; set `CLAUDIA_INTEGRATION_ID=none` to omit it and lose those models.
 
 ### Claude Code
 
 Claude Code talks to whatever `ANTHROPIC_BASE_URL` points at, so it only needs
-env vars — no plugin. Its default model (`claude-fable-*`) is not in the Copilot
-catalog, so pick one that is (`claude-opus-5-5`, `claude-sonnet-5-5`,
-`claude-haiku-5-5`, … — see `GET /v1/models`; dashed or dotted both work).
+env vars — no plugin. Two constraints:
+
+* Its default model (`claude-fable-*`) is not in the Copilot catalog — pick one
+  that is (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, …).
+* It speaks the Anthropic format only, and CAPI serves only Claude models on
+  that format — GPT/Gemini models are not reachable from Claude Code through
+  this proxy. Put a format translator such as LiteLLM in front if you need that.
+
+PowerShell:
+
+```powershell
+$env:ANTHROPIC_BASE_URL = 'http://127.0.0.1:4242'
+$env:ANTHROPIC_AUTH_TOKEN = 'unused'                    # or your CLAUDIA_API_KEY
+$env:ANTHROPIC_MODEL = 'claude-sonnet-5-5'              # main model
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL = 'claude-haiku-5-5' # background tasks
+$env:CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'     # no updater/telemetry calls to the proxy
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+claude
+```
+
+bash/zsh:
 
 ```sh
 export ANTHROPIC_BASE_URL=http://127.0.0.1:4242
-export ANTHROPIC_AUTH_TOKEN=unused                  # or your CLAUDIA_API_KEY
-export ANTHROPIC_MODEL=claude-sonnet-5-5            # main model
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-5-5   # background tasks
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no updater/telemetry calls to the proxy
+export ANTHROPIC_AUTH_TOKEN=unused
+export ANTHROPIC_MODEL=claude-sonnet-5-5
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-5-5
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 unset ANTHROPIC_API_KEY
 claude
 ```
 
-Or make it permanent without touching your shell, in `~/.claude/settings.json`:
+Or make it permanent for every shell in `~/.claude/settings.json`
+(`%USERPROFILE%\.claude\settings.json` on Windows):
 
 ```json
 {
@@ -109,7 +142,7 @@ All via environment variables.
 | `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` |
 | `GITHUB_TOKEN` | _(from `gh`)_ | GitHub OAuth token with Copilot access |
 | `CLAUDIA_GITHUB_API_URL` | `https://api.github.com` | GitHub REST base (GHE: `https://api.<host>`) |
-| `CLAUDIA_INTEGRATION_ID` | _(none)_ | Sends `Copilot-Integration-Id`. `vscode-chat` exposes extra models on some SKUs. |
+| `CLAUDIA_INTEGRATION_ID` | `vscode-chat` | `Copilot-Integration-Id` header; CAPI gates part of the catalog on it. `none` omits it. |
 | `CLAUDIA_CAPI_URL` | _(discovered)_ | Skip discovery; send everything here (debugging/tests) |
 | `CLAUDIA_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
@@ -124,7 +157,9 @@ npm test            # node --test (unit + end-to-end against a fake CAPI)
 
 * `copilot_internal/*` and CAPI are undocumented GitHub endpoints; behaviour
   can change without notice. Routing non-GitHub tooling through your Copilot
-  seat may not be covered by your Copilot terms — check before sharing.
+  seat may not be covered by your Copilot terms — check before sharing. The
+  default `Copilot-Integration-Id: vscode-chat` is what Copilot Chat sends;
+  claudia still identifies itself honestly via `User-Agent`.
 * Every request spends your Copilot quota (premium requests / credits). Keep
   the proxy on loopback or behind `CLAUDIA_API_KEY`.
 * Not supported: embeddings, Anthropic server-side tools (web search / fetch),

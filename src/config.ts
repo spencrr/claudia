@@ -12,7 +12,11 @@ export interface Config {
 	readonly githubApiUrl: string;
 	/** Skip discovery and send every upstream call to this base URL (debug/testing). */
 	readonly capiUrl: string | undefined;
-	/** Optional `Copilot-Integration-Id`; some SKUs expose extra models for `vscode-chat`. */
+	/**
+	 * `Copilot-Integration-Id` sent upstream. CAPI gates part of the catalog on
+	 * it (e.g. `gpt-5.6-sol-fast`, Gemini) — without it those models 400.
+	 * `undefined` omits the header.
+	 */
 	readonly integrationId: string | undefined;
 	readonly logLevel: LogLevel;
 }
@@ -25,7 +29,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		githubToken: env.GITHUB_TOKEN || undefined,
 		githubApiUrl: stripTrailingSlash(env.CLAUDIA_GITHUB_API_URL || 'https://api.github.com'),
 		capiUrl: env.CLAUDIA_CAPI_URL ? stripTrailingSlash(env.CLAUDIA_CAPI_URL) : undefined,
-		integrationId: env.CLAUDIA_INTEGRATION_ID || undefined,
+		integrationId: parseIntegrationId(env.CLAUDIA_INTEGRATION_ID),
 		logLevel: parseLogLevel(env.CLAUDIA_LOG_LEVEL || 'info'),
 	};
 	if (!isLoopback(config.host) && !config.apiKey) {
@@ -52,6 +56,14 @@ function parseLogLevel(value: string): LogLevel {
 		throw new Error(`CLAUDIA_LOG_LEVEL must be one of ${LOG_LEVELS.join('|')}, got "${value}"`);
 	}
 	return value as LogLevel;
+}
+
+/** Defaults to what the Copilot Chat extension sends; `none` opts out of the header entirely. */
+function parseIntegrationId(value: string | undefined): string | undefined {
+	if (value === undefined || value === '') {
+		return 'vscode-chat';
+	}
+	return value === 'none' ? undefined : value;
 }
 
 function stripTrailingSlash(url: string): string {

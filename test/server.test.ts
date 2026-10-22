@@ -138,7 +138,7 @@ describe('proxy server', () => {
 		assert.equal(upstream.headers['content-type'], 'application/json');
 		assert.match(upstream.headers['user-agent'] ?? '', /^claudia\//);
 		assert.equal(upstream.headers['x-stainless-lang'], undefined, 'client telemetry headers are not relayed');
-		assert.equal(upstream.headers['copilot-integration-id'], undefined);
+		assert.equal(upstream.headers['copilot-integration-id'], 'vscode-chat');
 	});
 
 	test('POST /v1/messages relays Anthropic headers to CAPI /v1/messages', async () => {

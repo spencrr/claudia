@@ -10,8 +10,13 @@ describe('loadConfig', () => {
 		assert.equal(config.apiKey, undefined);
 		assert.equal(config.githubApiUrl, 'https://api.github.com');
 		assert.equal(config.capiUrl, undefined);
-		assert.equal(config.integrationId, undefined);
+		assert.equal(config.integrationId, 'vscode-chat');
 		assert.equal(config.logLevel, 'info');
+	});
+
+	test('CLAUDIA_INTEGRATION_ID overrides or disables the header', () => {
+		assert.equal(loadConfig({ CLAUDIA_INTEGRATION_ID: 'custom-id' }).integrationId, 'custom-id');
+		assert.equal(loadConfig({ CLAUDIA_INTEGRATION_ID: 'none' }).integrationId, undefined);
 	});
 
 	test('reads overrides and strips trailing slashes from URLs', () => {
@@ -21,7 +26,6 @@ describe('loadConfig', () => {
 			GITHUB_TOKEN: 'gho_x',
 			CLAUDIA_GITHUB_API_URL: 'https://api.acme.ghe.com/',
 			CLAUDIA_CAPI_URL: 'http://127.0.0.1:9999/',
-			CLAUDIA_INTEGRATION_ID: 'vscode-chat',
 			CLAUDIA_LOG_LEVEL: 'debug',
 		});
 		assert.equal(config.port, 8080);
@@ -29,7 +33,6 @@ describe('loadConfig', () => {
 		assert.equal(config.githubToken, 'gho_x');
 		assert.equal(config.githubApiUrl, 'https://api.acme.ghe.com');
 		assert.equal(config.capiUrl, 'http://127.0.0.1:9999');
-		assert.equal(config.integrationId, 'vscode-chat');
 		assert.equal(config.logLevel, 'debug');
 	});
 

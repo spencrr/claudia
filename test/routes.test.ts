@@ -43,16 +43,16 @@ describe('toOpenAIModelList', () => {
 });
 
 describe('upstreamHeaders', () => {
-	test('sends the bearer token and honest client identity, no integration id by default', () => {
+	test('sends the bearer token, client identity and the default integration id', () => {
 		const headers = upstreamHeaders(context());
 		assert.equal(headers['Authorization'], 'Bearer gho_test');
 		assert.match(headers['User-Agent'] ?? '', /^claudia\//);
 		assert.equal(headers['X-Request-Id'], 'req-1');
-		assert.equal('Copilot-Integration-Id' in headers, false);
+		assert.equal(headers['Copilot-Integration-Id'], 'vscode-chat');
 	});
 
-	test('adds Copilot-Integration-Id when configured', () => {
-		const headers = upstreamHeaders(context({ config: loadConfig({ CLAUDIA_INTEGRATION_ID: 'vscode-chat' }) }));
-		assert.equal(headers['Copilot-Integration-Id'], 'vscode-chat');
+	test('omits Copilot-Integration-Id when disabled', () => {
+		const headers = upstreamHeaders(context({ config: loadConfig({ CLAUDIA_INTEGRATION_ID: 'none' }) }));
+		assert.equal('Copilot-Integration-Id' in headers, false);
 	});
 });
