@@ -23,7 +23,7 @@ export interface UpstreamResolver {
 
 export interface UpstreamDeps {
 	readonly fetch: typeof globalThis.fetch;
-	readonly resolveToken: (configured: string | undefined) => Promise<string>;
+	readonly resolveToken: (config: Config) => Promise<string>;
 	readonly now: () => number;
 }
 
@@ -31,20 +31,21 @@ const DEFAULT_CAPI_URL = 'https://api.githubcopilot.com';
 const USER_API_VERSION = '2025-04-01';
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
-/** `GITHUB_TOKEN` wins; otherwise borrow the token the GitHub CLI is signed in with. */
-export async function resolveGitHubToken(configured: string | undefined): Promise<string> {
-	if (configured) {
-		return configured;
+/** `GITHUB_TOKEN` wins; otherwise borrow the token the GitHub CLI holds for `githubUser` (or its active account). */
+export async function resolveGitHubToken(config: Pick<Config, 'githubToken' | 'githubUser'>): Promise<string> {
+	if (config.githubToken) {
+		return config.githubToken;
 	}
+	const args = ['auth', 'token', ...(config.githubUser ? ['--user', config.githubUser] : [])];
 	let token = '';
 	try {
-		const { stdout } = await execFileAsync('gh', ['auth', 'token'], { timeout: 10_000, windowsHide: true });
+		const { stdout } = await execFileAsync('gh', args, { timeout: 10_000, windowsHide: true });
 		token = stdout.trim();
 	} catch (err) {
 		throw new Error(`No GitHub token: set GITHUB_TOKEN or run \`gh auth login\` (${describe(err)})`);
 	}
 	if (!token) {
-		throw new Error('No GitHub token: `gh auth token` returned nothing; set GITHUB_TOKEN or run `gh auth login`');
+		throw new Error(`No GitHub token: \`gh ${args.join(' ')}\` returned nothing; set GITHUB_TOKEN or run \`gh auth login\``);
 	}
 	return token;
 }
@@ -64,7 +65,7 @@ export function createUpstreamResolver(config: Config, log: Logger, deps: Partia
 	let pending: Promise<UpstreamSession> | undefined;
 
 	const build = async (): Promise<UpstreamSession> => {
-		const token = await resolveToken(config.githubToken);
+		const token = await resolveToken(config);
 		if (config.capiUrl) {
 			log.info(`using CAPI URL override ${config.capiUrl}; skipping endpoint discovery`);
 			return { token, apiUrl: config.capiUrl, login: undefined, plan: undefined };

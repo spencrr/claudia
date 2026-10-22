@@ -8,6 +8,8 @@ export interface Config {
 	readonly apiKey: string | undefined;
 	/** GitHub OAuth token. When unset, resolved from `gh auth token`. */
 	readonly githubToken: string | undefined;
+	/** `gh` account to borrow the token from (`gh auth token -u <user>`); defaults to the active one. */
+	readonly githubUser: string | undefined;
 	/** GitHub REST API base used for Copilot endpoint discovery. */
 	readonly githubApiUrl: string;
 	/** Skip discovery and send every upstream call to this base URL (debug/testing). */
@@ -27,6 +29,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		port: parsePort(env.CLAUDIA_PORT || '4242'),
 		apiKey: env.CLAUDIA_API_KEY || undefined,
 		githubToken: env.GITHUB_TOKEN || undefined,
+		githubUser: env.CLAUDIA_GITHUB_USER || undefined,
 		githubApiUrl: stripTrailingSlash(env.CLAUDIA_GITHUB_API_URL || 'https://api.github.com'),
 		capiUrl: env.CLAUDIA_CAPI_URL ? stripTrailingSlash(env.CLAUDIA_CAPI_URL) : undefined,
 		integrationId: parseIntegrationId(env.CLAUDIA_INTEGRATION_ID),

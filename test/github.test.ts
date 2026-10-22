@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { loadConfig } from '../src/config.ts';
-import { createUpstreamResolver } from '../src/github.ts';
+import { createUpstreamResolver, resolveGitHubToken } from '../src/github.ts';
 import { silentLogger } from '../src/log.ts';
 
 function fakeFetch(handler: (url: string, init?: RequestInit) => Response) {
@@ -18,6 +18,19 @@ const userResponse = () => Response.json({
 	login: 'octocat',
 	copilot_plan: 'enterprise',
 	endpoints: { api: 'https://api.enterprise.githubcopilot.com/' },
+});
+
+describe('resolveGitHubToken', () => {
+	test('prefers an explicit GITHUB_TOKEN over the gh CLI', async () => {
+		assert.equal(await resolveGitHubToken({ githubToken: 'gho_explicit', githubUser: 'ignored' }), 'gho_explicit');
+	});
+
+	test('fails clearly when the requested gh account does not exist', async () => {
+		await assert.rejects(
+			resolveGitHubToken({ githubToken: undefined, githubUser: 'no-such-user-claudia-test' }),
+			/No GitHub token/,
+		);
+	});
 });
 
 describe('createUpstreamResolver', () => {

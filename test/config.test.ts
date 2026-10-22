@@ -8,6 +8,7 @@ describe('loadConfig', () => {
 		assert.equal(config.host, '127.0.0.1');
 		assert.equal(config.port, 4242);
 		assert.equal(config.apiKey, undefined);
+		assert.equal(config.githubUser, undefined);
 		assert.equal(config.githubApiUrl, 'https://api.github.com');
 		assert.equal(config.capiUrl, undefined);
 		assert.equal(config.integrationId, 'vscode-chat');
@@ -24,6 +25,7 @@ describe('loadConfig', () => {
 			CLAUDIA_PORT: '8080',
 			CLAUDIA_API_KEY: 'secret',
 			GITHUB_TOKEN: 'gho_x',
+			CLAUDIA_GITHUB_USER: 'octocat',
 			CLAUDIA_GITHUB_API_URL: 'https://api.acme.ghe.com/',
 			CLAUDIA_CAPI_URL: 'http://127.0.0.1:9999/',
 			CLAUDIA_LOG_LEVEL: 'debug',
@@ -31,6 +33,7 @@ describe('loadConfig', () => {
 		assert.equal(config.port, 8080);
 		assert.equal(config.apiKey, 'secret');
 		assert.equal(config.githubToken, 'gho_x');
+		assert.equal(config.githubUser, 'octocat');
 		assert.equal(config.githubApiUrl, 'https://api.acme.ghe.com');
 		assert.equal(config.capiUrl, 'http://127.0.0.1:9999');
 		assert.equal(config.logLevel, 'debug');

@@ -141,6 +141,7 @@ All via environment variables.
 | `CLAUDIA_HOST` | `127.0.0.1` | Bind address. Non-loopback **requires** `CLAUDIA_API_KEY`. |
 | `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` |
 | `GITHUB_TOKEN` | _(from `gh`)_ | GitHub OAuth token with Copilot access |
+| `CLAUDIA_GITHUB_USER` | _(active `gh` account)_ | Borrow the token of a specific `gh` login (`gh auth token --user …`) when several are signed in |
 | `CLAUDIA_GITHUB_API_URL` | `https://api.github.com` | GitHub REST base (GHE: `https://api.<host>`) |
 | `CLAUDIA_INTEGRATION_ID` | `vscode-chat` | `Copilot-Integration-Id` header; CAPI gates part of the catalog on it. `none` omits it. |
 | `CLAUDIA_CAPI_URL` | _(discovered)_ | Skip discovery; send everything here (debugging/tests) |
