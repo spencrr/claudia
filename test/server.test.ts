@@ -141,6 +141,34 @@ describe('proxy server', () => {
 		assert.equal(upstream.headers['copilot-integration-id'], undefined);
 	});
 
+	test('POST /v1/messages relays Anthropic headers to CAPI /v1/messages', async () => {
+		const body = '{"model":"claude-sonnet-5-5","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}';
+		const response = await fetch(`${proxy.url}/v1/messages`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'anthropic-version': '2023-06-01',
+				'anthropic-beta': 'interleaved-thinking-2025-05-14,claude-code-20250219',
+				'x-api-key': 'sk-ant-should-not-leak',
+			},
+			body,
+		});
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { echo: { path: '/v1/messages', body } });
+
+		const upstream = capi.requests.at(-1)!;
+		assert.equal(upstream.headers.authorization, 'Bearer gho_test');
+		assert.equal(upstream.headers['anthropic-version'], '2023-06-01');
+		assert.equal(upstream.headers['anthropic-beta'], 'interleaved-thinking-2025-05-14,claude-code-20250219');
+		assert.equal(upstream.headers['x-api-key'], undefined, 'client credentials are never relayed');
+	});
+
+	test('POST /v1/messages/count_tokens maps to the CAPI path', async () => {
+		const response = await fetch(`${proxy.url}/v1/messages/count_tokens`, { method: 'POST', body: '{"model":"claude-haiku-5-5","messages":[]}' });
+		assert.equal(response.status, 200);
+		assert.equal(capi.requests.at(-1)?.path, '/v1/messages/count_tokens');
+	});
+
 	test('accepts paths without the /v1 prefix', async () => {
 		const response = await fetch(`${proxy.url}/responses`, { method: 'POST', body: '{"model":"gpt-5.6-sol","input":"hi"}' });
 		assert.equal(response.status, 200);

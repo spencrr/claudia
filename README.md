@@ -1,8 +1,9 @@
 # claudia
 
-A small OpenAI-compatible HTTP proxy that routes model calls through your
-GitHub Copilot subscription. Point any OpenAI SDK at `http://127.0.0.1:4242/v1`
-and use Copilot's models (GPT, Claude, Gemini, …) with Copilot billing.
+A small local HTTP proxy that routes model calls through your GitHub Copilot
+subscription. It speaks both the OpenAI and Anthropic wire formats, so OpenAI
+SDKs, Anthropic SDKs and Claude Code can all use Copilot's models (GPT, Claude,
+Gemini, …) with Copilot billing.
 
 It mirrors how VS Code's agent host bridges third-party harnesses (Claude
 Agent SDK, Codex) to the Copilot API: a loopback server that re-issues each
@@ -18,8 +19,9 @@ OpenAI client ──▶ 127.0.0.1:4242/v1/chat/completions ──▶ https://api
 1. **Token** — `GITHUB_TOKEN`, else `gh auth token` (the GitHub CLI's login).
 2. **Discovery** — `GET api.github.com/copilot_internal/user` returns your
    CAPI base URL (`endpoints.api`); cached for 30 min, re-resolved on 401/403.
-3. **Passthrough** — CAPI speaks the OpenAI wire format natively, so request and
-   response bodies (including SSE streams) are forwarded byte-for-byte.
+3. **Passthrough** — CAPI speaks the OpenAI and Anthropic wire formats natively,
+   so request and response bodies (including SSE streams) are forwarded
+   byte-for-byte. Only `/v1/models` is translated.
 
 ## Usage
 
@@ -45,6 +47,43 @@ await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 carries a non-standard `supported_endpoints` hint — newer OpenAI models answer
 only on `/responses`, and CAPI returns a clear 400 if you pick the wrong one.
 
+### Claude Code
+
+Claude Code talks to whatever `ANTHROPIC_BASE_URL` points at, so it only needs
+env vars — no plugin. Its default model (`claude-fable-*`) is not in the Copilot
+catalog, so pick one that is (`claude-opus-5-5`, `claude-sonnet-5-5`,
+`claude-haiku-5-5`, … — see `GET /v1/models`; dashed or dotted both work).
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4242
+export ANTHROPIC_AUTH_TOKEN=unused                  # or your CLAUDIA_API_KEY
+export ANTHROPIC_MODEL=claude-sonnet-5-5            # main model
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-5-5   # background tasks
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no updater/telemetry calls to the proxy
+unset ANTHROPIC_API_KEY
+claude
+```
+
+Or make it permanent without touching your shell, in `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:4242",
+    "ANTHROPIC_AUTH_TOKEN": "unused",
+    "ANTHROPIC_MODEL": "claude-sonnet-5-5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-5-5",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": { "deny": ["WebSearch"] }
+}
+```
+
+`WebSearch` is denied because it is an Anthropic server-side tool that CAPI
+does not run. `ANTHROPIC_DEFAULT_OPUS_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL`
+remap the `opus` / `sonnet` aliases if you use those. The `total_cost_usd` Claude
+Code prints is its Anthropic list-price estimate, not what Copilot bills.
+
 ## Routes
 
 | Route | Upstream |
@@ -53,8 +92,11 @@ only on `/responses`, and CAPI returns a clear 400 if you pick the wrong one.
 | `GET /v1/models` | `GET {api}/models`, translated to the OpenAI list shape |
 | `POST /v1/chat/completions` | `POST {api}/chat/completions` |
 | `POST /v1/responses` | `POST {api}/responses` |
+| `POST /v1/messages` | `POST {api}/v1/messages` (Anthropic Messages API) |
+| `POST /v1/messages/count_tokens` | `POST {api}/v1/messages/count_tokens` |
 
-The `/v1` prefix is optional. Add a route in [`src/routes.ts`](src/routes.ts).
+The `/v1` prefix is optional. `anthropic-version` and `anthropic-beta` are the
+only client headers relayed upstream. Add a route in [`src/routes.ts`](src/routes.ts).
 
 ## Configuration
 
@@ -85,5 +127,5 @@ npm test            # node --test (unit + end-to-end against a fake CAPI)
   seat may not be covered by your Copilot terms — check before sharing.
 * Every request spends your Copilot quota (premium requests / credits). Keep
   the proxy on loopback or behind `CLAUDIA_API_KEY`.
-* Not supported: embeddings, token counting, Anthropic Messages API input
-  (CAPI's `/v1/messages` exists, but this proxy only speaks OpenAI shapes).
+* Not supported: embeddings, Anthropic server-side tools (web search / fetch),
+  models outside the Copilot catalog.

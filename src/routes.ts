@@ -32,24 +32,38 @@ export interface Route {
 }
 
 /**
- * The extension point: one line per OpenAI-compatible surface. CAPI speaks
- * the OpenAI wire format natively on each of these, so most routes are plain
- * passthroughs — add a handler only when translation is really needed.
+ * The extension point: one line per API surface. CAPI speaks both the OpenAI
+ * and Anthropic wire formats natively, so routes are plain passthroughs — add
+ * a handler only when translation is really needed.
  */
 export const routes: readonly Route[] = [
 	{ method: 'GET', path: '/models', handler: listModels },
+	// OpenAI
 	{ method: 'POST', path: '/chat/completions', handler: passthrough('/chat/completions') },
 	{ method: 'POST', path: '/responses', handler: passthrough('/responses') },
+	// Anthropic Messages API (Claude Code, Anthropic SDKs). CAPI keeps the /v1 prefix here.
+	{ method: 'POST', path: '/messages', handler: passthrough('/v1/messages') },
+	{ method: 'POST', path: '/messages/count_tokens', handler: passthrough('/v1/messages/count_tokens') },
 ];
+
+/** Inbound headers relayed upstream. Anthropic clients version and feature-gate requests through these. */
+const RELAYED_REQUEST_HEADERS = ['anthropic-version', 'anthropic-beta'];
 
 /** Forward the JSON body byte-for-byte to `${apiUrl}${upstreamPath}`, returning CAPI's response as-is. */
 export function passthrough(upstreamPath: string): RouteHandler {
 	return async (request, ctx) => {
 		const body = await request.body();
 		ctx.log.debug(`[${ctx.requestId}] → POST ${upstreamPath} model=${peekModel(body) ?? '?'}`);
+		const headers: Record<string, string> = { ...upstreamHeaders(ctx), 'Content-Type': 'application/json' };
+		for (const name of RELAYED_REQUEST_HEADERS) {
+			const value = request.headers.get(name);
+			if (value) {
+				headers[name] = value;
+			}
+		}
 		return ctx.fetch(`${ctx.session.apiUrl}${upstreamPath}`, {
 			method: 'POST',
-			headers: { ...upstreamHeaders(ctx), 'Content-Type': 'application/json' },
+			headers,
 			body,
 			signal: request.signal,
 		});
