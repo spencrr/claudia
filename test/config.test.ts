@@ -1,0 +1,59 @@
+import assert from 'node:assert/strict';
+import { describe, test } from 'node:test';
+import { isLoopback, loadConfig } from '../src/config.ts';
+
+describe('loadConfig', () => {
+	test('applies defaults', () => {
+		const config = loadConfig({});
+		assert.equal(config.host, '127.0.0.1');
+		assert.equal(config.port, 4242);
+		assert.equal(config.apiKey, undefined);
+		assert.equal(config.githubApiUrl, 'https://api.github.com');
+		assert.equal(config.capiUrl, undefined);
+		assert.equal(config.integrationId, undefined);
+		assert.equal(config.logLevel, 'info');
+	});
+
+	test('reads overrides and strips trailing slashes from URLs', () => {
+		const config = loadConfig({
+			CLAUDIA_PORT: '8080',
+			CLAUDIA_API_KEY: 'secret',
+			GITHUB_TOKEN: 'gho_x',
+			CLAUDIA_GITHUB_API_URL: 'https://api.acme.ghe.com/',
+			CLAUDIA_CAPI_URL: 'http://127.0.0.1:9999/',
+			CLAUDIA_INTEGRATION_ID: 'vscode-chat',
+			CLAUDIA_LOG_LEVEL: 'debug',
+		});
+		assert.equal(config.port, 8080);
+		assert.equal(config.apiKey, 'secret');
+		assert.equal(config.githubToken, 'gho_x');
+		assert.equal(config.githubApiUrl, 'https://api.acme.ghe.com');
+		assert.equal(config.capiUrl, 'http://127.0.0.1:9999');
+		assert.equal(config.integrationId, 'vscode-chat');
+		assert.equal(config.logLevel, 'debug');
+	});
+
+	test('rejects invalid port and log level', () => {
+		assert.throws(() => loadConfig({ CLAUDIA_PORT: '0' }), /CLAUDIA_PORT/);
+		assert.throws(() => loadConfig({ CLAUDIA_PORT: 'abc' }), /CLAUDIA_PORT/);
+		assert.throws(() => loadConfig({ CLAUDIA_LOG_LEVEL: 'verbose' }), /CLAUDIA_LOG_LEVEL/);
+	});
+
+	test('refuses a non-loopback bind without an API key', () => {
+		assert.throws(() => loadConfig({ CLAUDIA_HOST: '0.0.0.0' }), /CLAUDIA_API_KEY/);
+		assert.doesNotThrow(() => loadConfig({ CLAUDIA_HOST: '0.0.0.0', CLAUDIA_API_KEY: 'k' }));
+	});
+});
+
+describe('isLoopback', () => {
+	test('recognises loopback forms', () => {
+		for (const host of ['127.0.0.1', '127.1.2.3', 'localhost', 'LOCALHOST', '::1', '[::1]']) {
+			assert.equal(isLoopback(host), true, host);
+		}
+	});
+	test('rejects everything else', () => {
+		for (const host of ['0.0.0.0', '192.168.1.5', '::', 'example.com', '']) {
+			assert.equal(isLoopback(host), false, host);
+		}
+	});
+});

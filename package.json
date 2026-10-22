@@ -1,0 +1,22 @@
+{
+  "name": "claudia",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible local proxy that routes model calls through your GitHub Copilot subscription",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "claudia": "src/main.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
