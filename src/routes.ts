@@ -30,6 +30,10 @@ export interface OpenAIModel {
 	readonly supported_endpoints: readonly string[];
 	/** Non-standard: context window in tokens, when CAPI reports one (feeds `CLAUDE_CODE_MAX_CONTEXT_TOKENS`). */
 	readonly context_window?: number;
+	/** Non-standard: CAPI's output limit and feature flags, so clients can size requests and gate images. */
+	readonly max_output_tokens?: number;
+	readonly tool_calls?: boolean;
+	readonly vision?: boolean;
 }
 
 export function toOpenAIModelList(models: readonly CapiModel[]): { object: 'list'; data: OpenAIModel[] } {
@@ -42,6 +46,9 @@ export function toOpenAIModelList(models: readonly CapiModel[]): { object: 'list
 			owned_by: (m.vendor ?? 'unknown').toLowerCase().replace(/\s+/g, '-'),
 			supported_endpoints: m.supported_endpoints ?? [],
 			...(m.capabilities?.limits?.max_context_window_tokens ? { context_window: m.capabilities.limits.max_context_window_tokens } : {}),
+			...(m.capabilities?.limits?.max_output_tokens ? { max_output_tokens: m.capabilities.limits.max_output_tokens } : {}),
+			...(typeof m.capabilities?.supports?.tool_calls === 'boolean' ? { tool_calls: m.capabilities.supports.tool_calls } : {}),
+			...(typeof m.capabilities?.supports?.vision === 'boolean' ? { vision: m.capabilities.supports.vision } : {}),
 		}))
 		.sort((a, b) => a.id.localeCompare(b.id));
 	return { object: 'list', data };

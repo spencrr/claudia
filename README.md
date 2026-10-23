@@ -53,8 +53,11 @@ await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 ### Models
 
 `GET /v1/models` lists every chat model your account can use — OpenAI, Anthropic,
-Google, xAI and experimental vendors alike. CAPI serves each vendor on one wire
-format only (the non-standard `supported_endpoints` field on each entry):
+Google, xAI and experimental vendors alike. Each entry carries non-standard
+hints from CAPI's catalog — `supported_endpoints`, `context_window`,
+`max_output_tokens`, `tool_calls`, `vision` — which clients such as Lestat (the
+companion VS Code extension in `../lestat`) use to size requests. CAPI serves
+each vendor on one wire format only:
 
 | Model family | CAPI serves it on | Reachable via |
 |---|---|---|
@@ -180,7 +183,7 @@ All via environment variables.
 |---|---|---|
 | `CLAUDIA_PORT` | `4242` | Listen port |
 | `CLAUDIA_HOST` | `127.0.0.1` | Bind address. Non-loopback **requires** `CLAUDIA_API_KEY`. |
-| `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` |
+| `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` or `x-api-key: <key>` |
 | `GITHUB_TOKEN` | _(from `gh`)_ | GitHub OAuth token with Copilot access |
 | `CLAUDIA_GITHUB_USER` | _(active `gh` account)_ | Borrow the token of a specific `gh` login (`gh auth token --user …`) when several are signed in |
 | `CLAUDIA_GITHUB_API_URL` | `https://api.github.com` | GitHub REST base (GHE: `https://api.<host>`) |

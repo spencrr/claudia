@@ -19,7 +19,7 @@ function context(overrides: Partial<ProxyContext> = {}): ProxyContext {
 
 describe('toOpenAIModelList', () => {
 	const models: CapiModel[] = [
-		{ id: 'gpt-5.6-sol', vendor: 'OpenAI', capabilities: { type: 'chat', limits: { max_context_window_tokens: 1050000 } }, supported_endpoints: ['/responses', 'ws:/responses'] },
+		{ id: 'gpt-5.6-sol', vendor: 'OpenAI', capabilities: { type: 'chat', limits: { max_context_window_tokens: 1050000, max_output_tokens: 128000 }, supports: { tool_calls: true, vision: false } }, supported_endpoints: ['/responses', 'ws:/responses'] },
 		{ id: 'claude-sonnet-5.5', vendor: 'Anthropic', capabilities: { type: 'chat' }, supported_endpoints: ['/v1/messages', '/chat/completions'] },
 		{ id: 'gpt-4.1', vendor: 'Azure OpenAI', capabilities: { type: 'chat' } },
 		{ id: 'text-embedding-3-small', vendor: 'Azure OpenAI', capabilities: { type: 'embeddings' } },
@@ -42,7 +42,12 @@ describe('toOpenAIModelList', () => {
 		assert.deepEqual(byId['gpt-4.1']?.supported_endpoints, []);
 		assert.deepEqual(byId['gpt-5.6-sol']?.supported_endpoints, ['/responses', 'ws:/responses']);
 		assert.equal(byId['gpt-5.6-sol']?.context_window, 1050000);
-		assert.equal('context_window' in (byId['gpt-4.1'] ?? {}), false);
+		assert.equal(byId['gpt-5.6-sol']?.max_output_tokens, 128000);
+		assert.equal(byId['gpt-5.6-sol']?.tool_calls, true);
+		assert.equal(byId['gpt-5.6-sol']?.vision, false);
+		for (const key of ['context_window', 'max_output_tokens', 'tool_calls', 'vision']) {
+			assert.equal(key in (byId['gpt-4.1'] ?? {}), false, `${key} omitted when CAPI does not report it`);
+		}
 	});
 });
 

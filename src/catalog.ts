@@ -9,6 +9,7 @@ export interface CapiModel {
 	readonly capabilities?: {
 		readonly type?: string;
 		readonly limits?: { readonly max_context_window_tokens?: number; readonly max_output_tokens?: number };
+		readonly supports?: { readonly tool_calls?: boolean; readonly vision?: boolean };
 	};
 	readonly supported_endpoints?: readonly string[];
 }

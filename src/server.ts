@@ -57,7 +57,7 @@ export function createServer(options: ServerOptions): http.Server {
 		if (method === 'GET' && (path === '/' || path === '/health')) {
 			return new Response('ok', { headers: { 'Content-Type': 'text/plain' } });
 		}
-		if (!isAuthorized(req.headers.authorization, config.apiKey)) {
+		if (!isAuthorized(req.headers, config.apiKey)) {
 			return errorResponse(401, 'authentication_error', 'Invalid API key');
 		}
 		const matching = routes.filter(route => route.path === path);
@@ -89,16 +89,22 @@ export function normalizePath(url: string): string {
 	return stripped === '' ? '/' : stripped;
 }
 
-/** Constant-time bearer check; an unset `apiKey` means auth is disabled (loopback-only deployments). */
-export function isAuthorized(authorization: string | undefined, apiKey: string | undefined): boolean {
+/**
+ * Constant-time key check accepting the OpenAI (`Authorization: Bearer`) and
+ * Anthropic (`x-api-key`) conventions. An unset `apiKey` disables auth
+ * (loopback-only deployments).
+ */
+export function isAuthorized(headers: { authorization?: string | undefined; 'x-api-key'?: string | string[] | undefined }, apiKey: string | undefined): boolean {
 	if (!apiKey) {
 		return true;
 	}
-	if (!authorization?.startsWith('Bearer ')) {
+	const bearer = headers.authorization?.startsWith('Bearer ') ? headers.authorization.slice('Bearer '.length) : undefined;
+	const presented = bearer ?? (typeof headers['x-api-key'] === 'string' ? headers['x-api-key'] : undefined);
+	if (presented === undefined) {
 		return false;
 	}
 	const digest = (value: string) => createHash('sha256').update(value).digest();
-	return timingSafeEqual(digest(authorization.slice('Bearer '.length)), digest(apiKey));
+	return timingSafeEqual(digest(presented), digest(apiKey));
 }
 
 export function errorResponse(status: number, type: string, message: string): Response {

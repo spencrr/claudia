@@ -233,8 +233,10 @@ describe('proxy server with an API key', () => {
 		assert.equal(capi.requests.length, before);
 	});
 
-	test('accepts the configured key', async () => {
+	test('accepts the configured key as a bearer token or as x-api-key', async () => {
 		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { Authorization: 'Bearer s3cret' } })).status, 200);
+		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { 'x-api-key': 's3cret' } })).status, 200);
+		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { 'x-api-key': 'wrong' } })).status, 401);
 	});
 });
 
@@ -274,13 +276,15 @@ describe('normalizePath', () => {
 
 describe('isAuthorized', () => {
 	test('is open when no key is configured', () => {
-		assert.equal(isAuthorized(undefined, undefined), true);
-		assert.equal(isAuthorized('Bearer anything', undefined), true);
+		assert.equal(isAuthorized({}, undefined), true);
+		assert.equal(isAuthorized({ authorization: 'Bearer anything' }, undefined), true);
 	});
-	test('requires an exact bearer match when a key is configured', () => {
-		assert.equal(isAuthorized('Bearer k', 'k'), true);
-		assert.equal(isAuthorized('Bearer kk', 'k'), false);
-		assert.equal(isAuthorized('Basic k', 'k'), false);
-		assert.equal(isAuthorized(undefined, 'k'), false);
+	test('requires an exact match via bearer or x-api-key when a key is configured', () => {
+		assert.equal(isAuthorized({ authorization: 'Bearer k' }, 'k'), true);
+		assert.equal(isAuthorized({ 'x-api-key': 'k' }, 'k'), true);
+		assert.equal(isAuthorized({ authorization: 'Bearer kk' }, 'k'), false);
+		assert.equal(isAuthorized({ authorization: 'Basic k' }, 'k'), false);
+		assert.equal(isAuthorized({ authorization: 'Bearer wrong', 'x-api-key': 'k' }, 'k'), false, 'a presented bearer is not rescued by x-api-key');
+		assert.equal(isAuthorized({}, 'k'), false);
 	});
 });
