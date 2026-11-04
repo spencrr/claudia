@@ -10,7 +10,7 @@
  */
 
 import { lookup } from 'node:dns/promises';
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { VERSION } from './proxy.ts';
 
 export interface SearchResult {
@@ -222,40 +222,34 @@ async function defaultResolve(hostname: string): Promise<string[]> {
 	return records.map(record => record.address);
 }
 
-/** False for loopback, unspecified, private, link-local/metadata, CGNAT, ULA and IPv4-mapped forms of those. */
-export function isPublicAddress(address: string): boolean {
-	const kind = isIP(address);
-	if (kind === 4) {
-		return isPublicV4(address);
-	}
-	if (kind !== 6) {
-		return false;
-	}
-	const lower = address.toLowerCase();
-	const mapped = /^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-	if (mapped) {
-		return isPublicV4(mapped[1]!);
-	}
-	if (lower === '::' || lower === '::1') {
-		return false;
-	}
-	const firstHextet = parseInt(lower.split(':')[0] || '0', 16);
-	return !(
-		(firstHextet & 0xfe00) === 0xfc00 // fc00::/7 unique local
-		|| (firstHextet & 0xffc0) === 0xfe80 // fe80::/10 link local
-	);
+/**
+ * Non-public ranges. `BlockList` normalizes IPv4-mapped IPv6 (`::ffff:7f00:1`,
+ * which is how the URL parser spells `[::ffff:127.0.0.1]`) against the IPv4
+ * subnets, so the IPv4 list covers both spellings.
+ */
+const NON_PUBLIC = new BlockList();
+for (const [address, prefix] of [
+	['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+	['172.16.0.0', 12], ['192.168.0.0', 16], ['224.0.0.0', 3],
+] as const) {
+	NON_PUBLIC.addSubnet(address, prefix, 'ipv4');
+}
+for (const [address, prefix] of [
+	['::', 96], // unspecified, loopback and deprecated IPv4-compatible (::7f00:1)
+	['64:ff9b::', 96], // NAT64
+	['2002::', 16], // 6to4
+	['fc00::', 7], // unique local
+	['fe80::', 10], // link local
+	['fec0::', 10], // deprecated site local
+	['ff00::', 8], // multicast
+] as const) {
+	NON_PUBLIC.addSubnet(address, prefix, 'ipv6');
 }
 
-function isPublicV4(address: string): boolean {
-	const [a, b] = address.split('.').map(Number) as [number, number, number, number];
-	return !(
-		a === 0 || a === 10 || a === 127
-		|| (a === 100 && b >= 64 && b <= 127) // CGNAT
-		|| (a === 169 && b === 254) // link-local + cloud metadata
-		|| (a === 172 && b >= 16 && b <= 31)
-		|| (a === 192 && b === 168)
-		|| a >= 224 // multicast + reserved + broadcast
-	);
+/** False for anything in {@link NON_PUBLIC} or not an IP literal at all. */
+export function isPublicAddress(address: string): boolean {
+	const kind = isIP(address);
+	return kind !== 0 && !NON_PUBLIC.check(address, kind === 6 ? 'ipv6' : 'ipv4');
 }
 
 async function readBounded(response: Response, maxBytes: number): Promise<string> {
