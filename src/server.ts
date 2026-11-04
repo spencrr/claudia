@@ -3,7 +3,7 @@ import * as http from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
-import type { Config } from './config.ts';
+import { isLoopback, type Config } from './config.ts';
 import type { UpstreamResolver } from './github.ts';
 import type { Logger } from './log.ts';
 import type { ProxyRequest, Route } from './proxy.ts';
@@ -63,9 +63,12 @@ export function createServer(options: ServerOptions): http.Server {
 		if (!isAuthorized(req.headers, config.apiKey)) {
 			return errorResponse(401, 'authentication_error', 'Invalid API key');
 		}
+		if (!config.apiKey && !isLocalClient(req.headers)) {
+			return errorResponse(403, 'permission_error', 'Without CLAUDIA_API_KEY only local, non-browser clients are accepted');
+		}
 		const response = await route(method, path, req, signal, requestId);
 		if (response.status === 401 || response.status === 403) {
-			// Only upstream verdicts reach here (our own 401 returned above), so the token may have been rotated or revoked.
+			// Only upstream verdicts reach here (our own 401/403 returned above), so the token may have been rotated or revoked.
 			upstream.invalidate();
 		}
 		return response;
@@ -134,6 +137,25 @@ export function isAuthorized(headers: { authorization?: string | undefined; 'x-a
 	}
 	const digest = (value: string) => createHash('sha256').update(value).digest();
 	return timingSafeEqual(digest(presented), digest(apiKey));
+}
+
+/**
+ * Keyless mode relies on "only this machine can reach the port", but a web
+ * page the user has open can reach loopback too. Browsers send `Origin` on
+ * every cross-origin request and a `Host` naming the (possibly rebound) site;
+ * native clients send neither, so both are cheap discriminators.
+ */
+export function isLocalClient(headers: { host?: string | undefined; origin?: string | undefined }): boolean {
+	if (headers.origin !== undefined) {
+		return false;
+	}
+	let hostname: string;
+	try {
+		({ hostname } = new URL(`http://${headers.host ?? ''}`));
+	} catch {
+		return false;
+	}
+	return hostname.length > 0 && isLoopback(hostname);
 }
 
 export function errorResponse(status: number, type: string, message: string): Response {

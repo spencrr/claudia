@@ -7,7 +7,7 @@ import { gzipSync } from 'node:zlib';
 import { loadConfig } from '../src/config.ts';
 import { createUpstreamResolver, type UpstreamResolver } from '../src/github.ts';
 import { silentLogger } from '../src/log.ts';
-import { createServer, isAuthorized, MAX_REQUEST_BODY_BYTES, normalizePath } from '../src/server.ts';
+import { createServer, isAuthorized, isLocalClient, MAX_REQUEST_BODY_BYTES, normalizePath } from '../src/server.ts';
 
 interface RecordedRequest {
 	method: string;
@@ -216,7 +216,7 @@ describe('proxy server', () => {
 	test('a malformed request target gets a 400 and the process stays up', async () => {
 		const { port } = new URL(proxy.url);
 		const statusLine = await new Promise<string>((resolve, reject) => {
-			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n'));
+			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write('GET http://[ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n'));
 			socket.once('data', data => { resolve(data.toString().split('\r\n')[0] ?? ''); socket.destroy(); });
 			socket.on('error', reject);
 		});
@@ -227,7 +227,7 @@ describe('proxy server', () => {
 	test('refuses oversized request bodies with 413, declared or streamed', async () => {
 		const { port } = new URL(proxy.url);
 		const declared = await new Promise<string>((resolve, reject) => {
-			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${MAX_REQUEST_BODY_BYTES + 1}\r\n\r\n{}`));
+			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${MAX_REQUEST_BODY_BYTES + 1}\r\n\r\n{}`));
 			socket.once('data', data => { resolve(data.toString().split('\r\n')[0] ?? ''); socket.destroy(); });
 			socket.on('error', reject);
 		});
@@ -242,6 +242,24 @@ describe('proxy server', () => {
 		assert.equal(streamed.status, 413, 'a chunked body is refused once it passes the cap');
 		assert.equal(((await streamed.json()) as { error: { type: string } }).error.type, 'invalid_request_error');
 		assert.equal((await fetch(`${proxy.url}/`)).status, 200, 'server still answers afterwards');
+	});
+
+	test('keyless mode refuses browser-shaped requests: any Origin, or a non-loopback Host', async () => {
+		const before = capi.requests.length;
+		const csrf = await fetch(`${proxy.url}/v1/chat/completions`, { method: 'POST', headers: { Origin: 'https://attacker.example', 'Content-Type': 'text/plain' }, body: '{"model":"gpt-4.1","messages":[]}' });
+		assert.equal(csrf.status, 403);
+		// fetch() refuses to send a custom Host header, so speak HTTP directly for the DNS-rebinding shape.
+		const { port } = new URL(proxy.url);
+		const rebound = await new Promise<string>((resolve, reject) => {
+			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write('GET /v1/models HTTP/1.1\r\nHost: attacker.example:4242\r\nConnection: close\r\n\r\n'));
+			socket.once('data', data => { resolve(data.toString().split('\r\n')[0] ?? ''); socket.destroy(); });
+			socket.on('error', reject);
+		});
+		assert.match(rebound, /^HTTP\/1\.1 403/);
+		assert.equal(capi.requests.length, before, 'nothing reached upstream');
+		// Health stays open; native clients (no Origin, loopback Host) are unaffected.
+		assert.equal((await fetch(`${proxy.url}/health`, { headers: { Origin: 'https://attacker.example' } })).status, 200);
+		assert.equal((await fetch(`${proxy.url}/v1/models`)).status, 200);
 	});
 });
 
@@ -271,6 +289,25 @@ describe('proxy server with an API key', () => {
 		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { Authorization: 'Bearer s3cret' } })).status, 200);
 		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { 'x-api-key': 's3cret' } })).status, 200);
 		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { 'x-api-key': 'wrong' } })).status, 401);
+	});
+
+	test('with a key, browser-shaped requests are allowed: the key is the boundary', async () => {
+		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { Authorization: 'Bearer s3cret', Origin: 'https://my-web-app.example', Host: 'proxy.internal:4242' } })).status, 200);
+	});
+});
+
+describe('isLocalClient', () => {
+	test('accepts loopback hosts without an Origin', () => {
+		for (const host of ['127.0.0.1:4242', 'localhost:4242', '[::1]:4242', '127.0.0.1', 'LOCALHOST']) {
+			assert.equal(isLocalClient({ host }), true, host);
+		}
+	});
+	test('rejects any Origin, non-loopback or missing hosts', () => {
+		assert.equal(isLocalClient({ host: '127.0.0.1:4242', origin: 'http://127.0.0.1:4242' }), false, 'even a same-origin Origin means a browser');
+		assert.equal(isLocalClient({ host: '127.0.0.1:4242', origin: 'null' }), false);
+		for (const host of ['attacker.example:4242', '192.168.1.5:4242', '127.0.0.1.nip.io:4242', '', undefined, '[::1', 'a b']) {
+			assert.equal(isLocalClient({ host }), false, String(host));
+		}
 	});
 });
 
