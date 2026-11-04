@@ -19,7 +19,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
