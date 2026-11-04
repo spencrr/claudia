@@ -113,11 +113,13 @@ export const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
 export function normalizePath(url: string): string {
 	let pathname: string;
 	try {
-		({ pathname } = new URL(url, 'http://localhost'));
+		// Clients built from a `base_url` ending in `/` send `//responses`, which the URL parser
+		// would read as a protocol-relative URL with host `responses`; keep it a path.
+		({ pathname } = new URL(url.replace(/^\/{2,}/, '/'), 'http://localhost'));
 	} catch {
 		throw new RequestError(400, 'Malformed request target');
 	}
-	const stripped = pathname.replace(/^\/v1(?=\/|$)/, '').replace(/\/+$/, '');
+	const stripped = pathname.replace(/\/{2,}/g, '/').replace(/^\/v1(?=\/|$)/, '').replace(/\/+$/, '');
 	return stripped === '' ? '/' : stripped;
 }
 
