@@ -198,6 +198,34 @@ All built-in tools work, including `WebSearch` and `WebFetch` — see
 [Web tools](#web-tools) for how they are served without Anthropic's hosted
 backend.
 
+### Codex CLI
+
+Codex speaks the Responses API, which claudia passes straight through, so it
+needs a custom model provider rather than env vars. Add to `~/.codex/config.toml`
+(`%USERPROFILE%\.codex\config.toml` on Windows):
+
+```toml
+model_provider = "claudia"
+model = "gpt-5.6-sol"                 # any model with "responses" in supported_endpoints
+
+[model_providers.claudia]
+name = "claudia"
+base_url = "http://127.0.0.1:4242/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"            # the variable Codex reads the key from
+requires_openai_auth = false
+supports_websockets = false
+```
+
+Then `$env:OPENAI_API_KEY = 'unused'` (or your `CLAUDIA_API_KEY`) and run
+`codex`. The same settings work one-off as `codex -c 'model_provider="claudia"'
+-c 'model_providers.claudia.base_url="…"' …`. This mirrors how VS Code's own
+Codex harness points the CLI at its proxy.
+
+Only Responses-capable models work here (`gpt-5*`, `gpt-6*`, `grok-*`,
+`mai-code-2*`); Codex has no Chat Completions or Messages fallback, so
+`claude-*` and `gemini-*` are rejected upstream with a 400.
+
 ## Routes
 
 | Route | Upstream |
