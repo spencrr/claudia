@@ -118,6 +118,36 @@ describe('chatToEvents', () => {
 		assert.deepEqual(message.usage, { input_tokens: 12, output_tokens: 7, cache_read_input_tokens: 4 });
 	});
 
+	test('keeps every tool block open until the end so interleaved argument deltas land in the right call', async () => {
+		const message = await collectMessage(chatToEvents(frames(
+			{ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_a', function: { name: 'Read', arguments: '{"path":' } }] } }] },
+			{ choices: [{ delta: { tool_calls: [{ index: 1, id: 'call_b', function: { name: 'Glob', arguments: '{"pattern":' } }] } }] },
+			{ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"a.txt"}' } }] } }] },
+			{ choices: [{ delta: { tool_calls: [{ index: 1, function: { arguments: '"*.ts"}' } }] }, finish_reason: 'tool_calls' }] },
+			'[DONE]',
+		), 'm'), 'm');
+		assert.deepEqual(message.content, [
+			{ type: 'tool_use', id: 'call_a', name: 'Read', input: { path: 'a.txt' } },
+			{ type: 'tool_use', id: 'call_b', name: 'Glob', input: { pattern: '*.ts' } },
+		]);
+		assert.equal(message.stop_reason, 'tool_use');
+	});
+
+	test('text after a tool call opens a new text block instead of closing the tool', async () => {
+		const message = await collectMessage(chatToEvents(frames(
+			{ choices: [{ delta: { content: 'Let me ' } }] },
+			{ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c', function: { name: 'Read', arguments: '{"p":' } }] } }] },
+			{ choices: [{ delta: { content: 'look.' } }] },
+			{ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '1}' } }] }, finish_reason: 'tool_calls' }] },
+			'[DONE]',
+		), 'm'), 'm');
+		assert.deepEqual(message.content, [
+			{ type: 'text', text: 'Let me ' },
+			{ type: 'tool_use', id: 'c', name: 'Read', input: { p: 1 } },
+			{ type: 'text', text: 'look.' },
+		]);
+	});
+
 	test('maps length to max_tokens and an error chunk to an error event', async () => {
 		const truncated = await collectMessage(chatToEvents(frames({ choices: [{ delta: { content: 'x' }, finish_reason: 'length' }] }), 'm'), 'm');
 		assert.equal(truncated.stop_reason, 'max_tokens');

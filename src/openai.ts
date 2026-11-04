@@ -183,15 +183,16 @@ interface ChatChunk {
 export async function* chatToEvents(frames: AsyncIterable<SseFrame>, model: string): AsyncGenerator<StreamEvent> {
 	let started = false;
 	let nextIndex = 0;
-	let open: { index: number; kind: 'text' | 'tool' } | undefined;
+	let openText: number | undefined;
+	// Chat Completions may interleave argument deltas for several tool calls; each block stays open until the end.
 	const toolBlocks = new Map<number, number>();
 	let finish: string | undefined;
 	let usage: Usage = { input_tokens: 0, output_tokens: 0 };
 
-	const close = function* (): Generator<StreamEvent> {
-		if (open) {
-			yield { type: 'content_block_stop', index: open.index };
-			open = undefined;
+	const closeText = function* (): Generator<StreamEvent> {
+		if (openText !== undefined) {
+			yield { type: 'content_block_stop', index: openText };
+			openText = undefined;
 		}
 	};
 
@@ -226,21 +227,19 @@ export async function* chatToEvents(frames: AsyncIterable<SseFrame>, model: stri
 		}
 		const delta = choice.delta ?? {};
 		if (typeof delta.content === 'string' && delta.content.length > 0) {
-			if (open?.kind !== 'text') {
-				yield* close();
-				open = { index: nextIndex++, kind: 'text' };
-				yield { type: 'content_block_start', index: open.index, content_block: { type: 'text', text: '' } };
+			if (openText === undefined) {
+				openText = nextIndex++;
+				yield { type: 'content_block_start', index: openText, content_block: { type: 'text', text: '' } };
 			}
-			yield { type: 'content_block_delta', index: open.index, delta: { type: 'text_delta', text: delta.content } };
+			yield { type: 'content_block_delta', index: openText, delta: { type: 'text_delta', text: delta.content } };
 		}
 		for (const call of delta.tool_calls ?? []) {
 			const key = call.index ?? 0;
 			let index = toolBlocks.get(key);
 			if (index === undefined) {
-				yield* close();
+				yield* closeText();
 				index = nextIndex++;
 				toolBlocks.set(key, index);
-				open = { index, kind: 'tool' };
 				yield { type: 'content_block_start', index, content_block: { type: 'tool_use', id: call.id ?? `call_${randomUUID()}`, name: call.function?.name ?? '', input: {} } };
 			}
 			if (call.function?.arguments) {
@@ -255,7 +254,10 @@ export async function* chatToEvents(frames: AsyncIterable<SseFrame>, model: stri
 	if (!started) {
 		yield { type: 'message_start', message: emptyMessage(model) };
 	}
-	yield* close();
+	yield* closeText();
+	for (const index of toolBlocks.values()) {
+		yield { type: 'content_block_stop', index };
+	}
 	yield { type: 'message_delta', delta: { stop_reason: finishToStopReason(finish, toolBlocks.size > 0), stop_sequence: null }, usage };
 	yield { type: 'message_stop' };
 }

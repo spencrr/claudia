@@ -272,6 +272,13 @@ async function runWithHostedTools(backend: Backend, call: Call, hosted: ServerTo
 			executed.push(...outcome.blocks);
 			results.push({ type: 'tool_result', tool_use_id: toolCall.id, content: outcome.text });
 		}
+		const clientCalls = message.content.filter(block => block.type === 'tool_use' && !policies.has((block as ToolUseBlock).name));
+		if (clientCalls.length > 0) {
+			// The model also called a client tool, so the turn must end here: the client runs its
+			// tool, and the hosted results it needs travel in this message. Looping again would
+			// send the client's tool_use upstream without a result and fail with a 400.
+			return { ...message, content: [...executed, ...message.content.filter(block => !calls.includes(block as ToolUseBlock))], usage };
+		}
 		working = { ...working, messages: [...working.messages, { role: 'assistant', content: message.content }, { role: 'user', content: results }] };
 	}
 }
