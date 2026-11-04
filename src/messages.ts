@@ -95,10 +95,62 @@ async function resolveBackend(ctx: ProxyContext, model: string, signal: AbortSig
 const HOSTED_TOOL_PREFIXES = ['web_search', 'web_fetch'] as const;
 type HostedKind = (typeof HOSTED_TOOL_PREFIXES)[number];
 const DEFAULT_MAX_USES = 5;
+/** Unconditional ceiling on model round-trips per request, whatever `max_uses` says. */
 const MAX_TOOL_ROUNDS = 10;
 
 function hostedKind(tool: ServerTool): HostedKind | undefined {
 	return HOSTED_TOOL_PREFIXES.find(prefix => tool.type.startsWith(prefix));
+}
+
+/** What the client's tool definition allows: a call budget and, optionally, a domain policy the model cannot widen. */
+interface HostedPolicy {
+	readonly kind: HostedKind;
+	readonly maxUses: number;
+	readonly allowedDomains: string[] | undefined;
+	readonly blockedDomains: string[] | undefined;
+}
+
+const stringList = (value: unknown): string[] | undefined =>
+	Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v.length > 0) : undefined;
+
+function hostedPolicy(tool: ServerTool, kind: HostedKind): HostedPolicy {
+	const maxUses = tool.max_uses;
+	return {
+		kind,
+		// A non-integer `max_uses` must not become NaN: `round >= NaN` is never true.
+		maxUses: Number.isInteger(maxUses) && (maxUses as number) >= 0 ? (maxUses as number) : DEFAULT_MAX_USES,
+		allowedDomains: stringList(tool.allowed_domains),
+		blockedDomains: stringList(tool.blocked_domains),
+	};
+}
+
+const hostMatches = (hostname: string, domain: string) => hostname === domain.toLowerCase() || hostname.endsWith(`.${domain.toLowerCase()}`);
+
+function domainPermitted(url: string, policy: HostedPolicy): boolean {
+	let hostname: string;
+	try {
+		hostname = new URL(url).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	if (policy.allowedDomains?.length && !policy.allowedDomains.some(d => hostMatches(hostname, d))) {
+		return false;
+	}
+	return !policy.blockedDomains?.some(d => hostMatches(hostname, d));
+}
+
+/** The model may narrow the definition's domain policy, never widen it. */
+function effectiveSearchOptions(policy: HostedPolicy, input: Record<string, unknown>): { allowedDomains: string[] | undefined; blockedDomains: string[] | undefined } {
+	const modelAllowed = stringList(input.allowed_domains) ?? [];
+	const modelBlocked = stringList(input.blocked_domains) ?? [];
+	let allowedDomains: string[] | undefined = modelAllowed.length > 0 ? modelAllowed : undefined;
+	if (policy.allowedDomains?.length) {
+		// Keep only model domains inside the policy; if none survive, fall back to the policy itself.
+		const narrowed = modelAllowed.filter(d => policy.allowedDomains!.some(p => hostMatches(d.toLowerCase(), p)));
+		allowedDomains = narrowed.length > 0 ? narrowed : policy.allowedDomains;
+	}
+	const blockedDomains = [...(policy.blockedDomains ?? []), ...modelBlocked];
+	return { allowedDomains, blockedDomains: blockedDomains.length > 0 ? blockedDomains : undefined };
 }
 
 /** The JSON-schema tool the model sees in place of the hosted one. */
@@ -126,13 +178,23 @@ function asCustomTool(tool: ServerTool, kind: HostedKind): CustomTool {
 
 interface ToolOutcome { blocks: ContentBlock[]; text: string }
 
-async function execute(kind: HostedKind, call: ToolUseBlock, tools: WebTools, signal: AbortSignal): Promise<ToolOutcome> {
+function refused(kind: HostedKind, call: ToolUseBlock, errorCode: string, text: string): ToolOutcome {
+	return {
+		blocks: [
+			{ type: 'server_tool_use', id: call.id, name: call.name, input: call.input },
+			{ type: `${kind}_tool_result`, tool_use_id: call.id, content: { type: `${kind}_tool_result_error`, error_code: errorCode } },
+		],
+		text,
+	};
+}
+
+async function execute(policy: HostedPolicy, call: ToolUseBlock, tools: WebTools, signal: AbortSignal): Promise<ToolOutcome> {
+	const { kind } = policy;
 	const use: ContentBlock = { type: 'server_tool_use', id: call.id, name: call.name, input: call.input };
-	const strings = (value: unknown) => Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : undefined;
 	try {
 		if (kind === 'web_search') {
 			const query = String(call.input.query ?? '');
-			const results = await tools.search(query, { allowedDomains: strings(call.input.allowed_domains), blockedDomains: strings(call.input.blocked_domains) }, signal);
+			const results = await tools.search(query, effectiveSearchOptions(policy, call.input), signal);
 			return {
 				blocks: [use, {
 					type: 'web_search_tool_result',
@@ -145,6 +207,9 @@ async function execute(kind: HostedKind, call: ToolUseBlock, tools: WebTools, si
 			};
 		}
 		const url = String(call.input.url ?? '');
+		if (!domainPermitted(url, policy)) {
+			return refused(kind, call, 'url_not_allowed', `web_fetch refused: ${url} is outside the domains this tool is allowed to fetch.`);
+		}
 		const page = await tools.fetchPage(url, signal);
 		return {
 			blocks: [use, {
@@ -160,23 +225,21 @@ async function execute(kind: HostedKind, call: ToolUseBlock, tools: WebTools, si
 			text: page.title ? `# ${page.title}\n\n${page.text}` : page.text,
 		};
 	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		return {
-			blocks: [use, { type: `${kind}_tool_result`, tool_use_id: call.id, content: { type: `${kind}_tool_result_error`, error_code: 'unavailable' } }],
-			text: `${kind} failed: ${message}`,
-		};
+		return refused(kind, call, 'unavailable', `${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }
 
 /**
  * Run the model with hosted tools swapped for local ones, executing calls in
- * a bounded loop. The final message presents the work in Anthropic's hosted
- * tool block shapes so clients (Claude Code included) render it natively.
+ * a bounded loop. Each tool's `max_uses` counts executed calls (a parallel
+ * burst is not one use), and the round ceiling is unconditional. The final
+ * message presents the work in Anthropic's hosted tool block shapes so
+ * clients (Claude Code included) render it natively.
  */
 async function runWithHostedTools(backend: Backend, call: Call, hosted: ServerTool[], tools: WebTools): Promise<Message> {
-	const kinds = new Map(hosted.map(tool => [tool.name, hostedKind(tool)!] as const));
-	const budget = Math.min(MAX_TOOL_ROUNDS, hosted.reduce((sum, tool) => sum + (tool.max_uses ?? DEFAULT_MAX_USES), 0));
-	const localTools = hosted.map(tool => asCustomTool(tool, kinds.get(tool.name)!));
+	const policies = new Map(hosted.map(tool => [tool.name, hostedPolicy(tool, hostedKind(tool)!)] as const));
+	const remaining = new Map([...policies].map(([name, policy]) => [name, policy.maxUses]));
+	const localTools = hosted.map(tool => asCustomTool(tool, policies.get(tool.name)!.kind));
 	let working: MessagesRequest = { ...call.req, stream: false, tools: [...(call.req.tools ?? []).filter(tool => !isServerTool(tool)), ...localTools] };
 	const executed: ContentBlock[] = [];
 	const usage: Usage = { input_tokens: 0, output_tokens: 0, server_tool_use: { web_search_requests: 0, web_fetch_requests: 0 } };
@@ -185,8 +248,8 @@ async function runWithHostedTools(backend: Backend, call: Call, hosted: ServerTo
 		const message = await collectMessage(await run(backend, { ...call, req: working }), call.req.model);
 		usage.input_tokens += message.usage.input_tokens;
 		usage.output_tokens += message.usage.output_tokens;
-		const calls = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use' && kinds.has((block as ToolUseBlock).name));
-		if (calls.length === 0 || round >= budget) {
+		const calls = message.content.filter((block): block is ToolUseBlock => block.type === 'tool_use' && policies.has((block as ToolUseBlock).name));
+		if (calls.length === 0 || round >= MAX_TOOL_ROUNDS) {
 			return {
 				...message,
 				content: [...executed, ...message.content.filter(block => !calls.includes(block as ToolUseBlock))],
@@ -195,10 +258,17 @@ async function runWithHostedTools(backend: Backend, call: Call, hosted: ServerTo
 		}
 		const results: ToolResultBlock[] = [];
 		for (const toolCall of calls) {
-			const kind = kinds.get(toolCall.name)!;
-			call.ctx.log.info(`[${call.ctx.requestId}] ${kind} ${JSON.stringify(toolCall.input)}`);
-			const outcome = await execute(kind, toolCall, tools, call.signal);
-			usage.server_tool_use![kind === 'web_search' ? 'web_search_requests' : 'web_fetch_requests']! += 1;
+			const policy = policies.get(toolCall.name)!;
+			const left = remaining.get(toolCall.name)!;
+			let outcome: ToolOutcome;
+			if (left <= 0) {
+				outcome = refused(policy.kind, toolCall, 'max_uses_exceeded', `${toolCall.name} refused: this tool's max_uses budget is exhausted for this request.`);
+			} else {
+				remaining.set(toolCall.name, left - 1);
+				call.ctx.log.info(`[${call.ctx.requestId}] ${policy.kind} ${JSON.stringify(toolCall.input)}`);
+				outcome = await execute(policy, toolCall, tools, call.signal);
+				usage.server_tool_use![policy.kind === 'web_search' ? 'web_search_requests' : 'web_fetch_requests']! += 1;
+			}
 			executed.push(...outcome.blocks);
 			results.push({ type: 'tool_result', tool_use_id: toolCall.id, content: outcome.text });
 		}
