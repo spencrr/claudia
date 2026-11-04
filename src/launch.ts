@@ -87,7 +87,8 @@ export function claudeEnv(base: NodeJS.ProcessEnv, proxy: Proxy, catalog: readon
 	if (chosen && !CLAUDE_ALIAS.test(chosen)) {
 		const entry = catalog.find(m => normalizeModelId(m.id) === normalizeModelId(chosen));
 		if (!entry) {
-			throw new Error(`model "${chosen}" is not in the Copilot catalog. Available:\n  ${catalog.map(m => m.id).join('\n  ')}`);
+			// Names the source rather than echoing an environment value into the terminal.
+			throw new Error(`${model ? `--model ${model}` : 'ANTHROPIC_MODEL'} is not in the Copilot catalog. Available:\n  ${catalog.map(m => m.id).join('\n  ')}`);
 		}
 		if (!chosen.startsWith('claude-') && entry.context_window) {
 			env.CLAUDE_CODE_MAX_CONTEXT_TOKENS ??= String(entry.context_window); // Claude Code assumes 200k for ids it does not know
@@ -128,7 +129,11 @@ function findOnWindowsPath(command: string, env: NodeJS.ProcessEnv): string | un
 	return undefined;
 }
 
-// shortcut: good enough for CLI arguments; cmd.exe metacharacters inside an argument are not escaped.
-function quoteForCmd(arg: string): string {
-	return /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
+// shortcut: MSVC argv quoting only; cmd.exe metacharacters (%, ^, &) inside an argument are not escaped.
+export function quoteForCmd(arg: string): string {
+	if (!/[\s"]/.test(arg)) {
+		return arg;
+	}
+	// Backslashes are literal except before a quote or the closing quote, where they must be doubled.
+	return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
 }

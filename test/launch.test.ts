@@ -3,7 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { loadConfig } from '../src/config.ts';
-import { claudeEnv, ensureProxy, fetchCatalog, peekModel, runClient, type Proxy } from '../src/launch.ts';
+import { claudeEnv, ensureProxy, fetchCatalog, peekModel, quoteForCmd, runClient, type Proxy } from '../src/launch.ts';
 import type { OpenAIModel } from '../src/routes.ts';
 
 const model = (id: string, extra: Partial<OpenAIModel> = {}): OpenAIModel => ({ id, object: 'model', created: 0, owned_by: 'x', supported_endpoints: [], ...extra });
@@ -53,8 +53,20 @@ describe('claudeEnv', () => {
 		assert.equal(claudeEnv({}, proxy, [], undefined).ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined);
 	});
 
-	test('an unknown concrete id fails before the client starts, listing what exists', () => {
-		assert.throws(() => claudeEnv({}, proxy, catalog, 'gpt-7'), /not in the Copilot catalog[\s\S]*gpt-6-astra/);
+	test('an unknown concrete id fails before the client starts, naming the source and listing what exists', () => {
+		assert.throws(() => claudeEnv({}, proxy, catalog, 'gpt-7'), /--model gpt-7 is not in the Copilot catalog[\s\S]*gpt-6-astra/);
+		assert.throws(() => claudeEnv({ ANTHROPIC_MODEL: 'gpt-7' }, proxy, catalog, undefined), /^Error: ANTHROPIC_MODEL is not in the Copilot catalog/);
+	});
+});
+
+describe('quoteForCmd', () => {
+	test('follows MSVC argv rules: quotes only when needed, doubles backslashes before quotes and at the end', () => {
+		assert.equal(quoteForCmd('plain'), 'plain');
+		assert.equal(quoteForCmd('C:\\Users\\x\\note.txt'), 'C:\\Users\\x\\note.txt');
+		assert.equal(quoteForCmd('two words'), '"two words"');
+		assert.equal(quoteForCmd('say "hi"'), '"say \\"hi\\""');
+		assert.equal(quoteForCmd('back\\"slash'), '"back\\\\\\"slash"');
+		assert.equal(quoteForCmd('dir with space\\'), '"dir with space\\\\"');
 	});
 });
 
