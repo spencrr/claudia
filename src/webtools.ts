@@ -52,6 +52,7 @@ export interface WebToolsDeps {
 }
 
 const MAX_SNIPPET_CHARS = 1_500;
+const MAX_TITLE_CHARS = 300;
 const MAX_PAGE_CHARS = 100_000;
 const MAX_PAGE_BYTES = 1_000_000;
 const MAX_REDIRECTS = 5;
@@ -153,9 +154,9 @@ export function parseGitHubSearch(raw: string): SearchResult[] {
 				continue;
 			}
 			results.push({
-				title: item.title?.trim() || item.url,
-				url: item.url,
-				snippet: (item.snippets ?? []).join(' ').replace(/\s+/g, ' ').trim().slice(0, MAX_SNIPPET_CHARS),
+				title: clean(item.title ?? '').trim().slice(0, MAX_TITLE_CHARS) || item.url,
+				url: clean(item.url),
+				snippet: clean((item.snippets ?? []).join(' ')).replace(/\s+/g, ' ').trim().slice(0, MAX_SNIPPET_CHARS),
 				pageAge: item.last_updated_date ?? null,
 			});
 		}
@@ -203,7 +204,7 @@ async function fetchPublicPage(request: PinnedRequest, resolve: (hostname: strin
 		}
 		const body = await readBounded(response, MAX_PAGE_BYTES);
 		const isHtml = (response.headers.get('content-type') ?? '').includes('html') || /^\s*<(!doctype|html)/i.test(body);
-		return isHtml ? htmlToText(body) : { title: null, text: body.slice(0, MAX_PAGE_CHARS) };
+		return isHtml ? htmlToText(body) : { title: null, text: clean(body).slice(0, MAX_PAGE_CHARS) };
 	}
 }
 
@@ -314,8 +315,10 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
 			if (done) {
 				break;
 			}
-			received += value.byteLength;
-			text += decoder.decode(value, { stream: true });
+			// Slice the chunk that crosses the cap so the limit is exact, not "cap plus one chunk".
+			const slice = value.subarray(0, maxBytes - received);
+			received += slice.byteLength;
+			text += decoder.decode(slice, { stream: true });
 		}
 	} finally {
 		await reader.cancel().catch(() => undefined);
@@ -324,18 +327,26 @@ async function readBounded(response: Response, maxBytes: number): Promise<string
 }
 
 export function htmlToText(html: string): FetchedPage {
-	const title = decodeEntities(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '').trim() || null;
-	const text = decodeEntities(
+	const title = clean(decodeEntities(/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? '')).replace(/\s+/g, ' ').trim().slice(0, MAX_TITLE_CHARS) || null;
+	const text = clean(decodeEntities(
 		html
-			.replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, ' ')
+			// An unclosed opener swallows to end of input once, as browsers do; `*?` to `</x>` would rescan per opener.
+			.replace(/<(script|style|noscript|svg|head)\b[\s\S]*?(?:<\/\1\s*>|$)/gi, ' ')
 			.replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|section|article|blockquote|pre)>/gi, '\n')
 			.replace(/<[^>]+>/g, ' '),
-	)
-		.replace(/[ \t\f\v]+/g, ' ')
-		.replace(/\s*\n\s*/g, '\n')
+	))
+		// Single-class passes: collapse every non-newline whitespace first so the newline pass has nothing to backtrack over.
+		.replace(/[^\S\n]+/g, ' ')
+		.replace(/ ?\n[\n ]*/g, '\n')
 		.trim()
 		.slice(0, MAX_PAGE_CHARS);
 	return { title, text };
+}
+
+/** Drop C0/C1 control characters (keeping tab and newline): fetched text reaches terminals and logs. */
+export function clean(value: string): string {
+	// eslint-disable-next-line no-control-regex
+	return value.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '');
 }
 
 const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
@@ -344,7 +355,8 @@ export function decodeEntities(value: string): string {
 	return value.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
 		if (entity[0] === '#') {
 			const code = entity[1]?.toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : parseInt(entity.slice(1), 10);
-			return Number.isFinite(code) ? String.fromCodePoint(code) : match;
+			// Surrogates and out-of-range code points would make fromCodePoint throw.
+			return Number.isFinite(code) && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : match;
 		}
 		return NAMED_ENTITIES[entity.toLowerCase()] ?? match;
 	});
