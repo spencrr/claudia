@@ -97,6 +97,36 @@ export function claudeEnv(base: NodeJS.ProcessEnv, proxy: Proxy, catalog: readon
 	return env;
 }
 
+/**
+ * Codex learns about the proxy from `-c` overrides on each run, leaving
+ * config.toml alone. Values stay unquoted (Codex falls back to a string when
+ * a value is not TOML) so nothing needs shell quoting on Windows.
+ */
+export function codexArgs(proxy: Proxy, args: readonly string[]): string[] {
+	const overrides = {
+		'model_provider': 'claudia',
+		'model_providers.claudia.name': 'claudia',
+		'model_providers.claudia.base_url': `${proxy.url}/v1`,
+		'model_providers.claudia.wire_api': 'responses',
+		'model_providers.claudia.env_key': 'OPENAI_API_KEY',
+		'model_providers.claudia.requires_openai_auth': 'false',
+		'model_providers.claudia.supports_websockets': 'false',
+	};
+	return [...Object.entries(overrides).flatMap(([key, value]) => ['-c', `${key}=${value}`]), ...args];
+}
+
+/** Codex only speaks the Responses API, so a model it is pointed at must answer there. */
+export function codexEnv(base: NodeJS.ProcessEnv, proxy: Proxy, catalog: readonly OpenAIModel[], model: string | undefined): NodeJS.ProcessEnv {
+	if (model) {
+		const entry = catalog.find(m => normalizeModelId(m.id) === normalizeModelId(model));
+		if (!entry?.supported_endpoints.includes('/responses')) {
+			const usable = catalog.filter(m => m.supported_endpoints.includes('/responses')).map(m => m.id);
+			throw new Error(`--model ${model} ${entry ? 'does not answer on the Responses API, which is all Codex speaks' : 'is not in the Copilot catalog'}. Usable:\n  ${usable.join('\n  ')}`);
+		}
+	}
+	return { ...base, OPENAI_API_KEY: proxy.apiKey ?? 'unused' }; // the provider's env_key; the proxy ignores it unless CLAUDIA_API_KEY is set
+}
+
 /** Hand the terminal to the client and resolve with its exit code. */
 export function runClient(command: string, args: readonly string[], env: NodeJS.ProcessEnv): Promise<number> {
 	return new Promise((resolve, reject) => {

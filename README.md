@@ -51,8 +51,9 @@ await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 ```
 
 To use it from an agent CLI you don't even need the server running first:
-`claudia claude --model gpt-6-astra` brings one up for the session — see
-[Claude Code](#claude-code).
+`claudia claude --model gpt-6-astra` or `claudia codex --model gpt-5.6-sol`
+brings one up for the session — see [Claude Code](#claude-code) and
+[Codex CLI](#codex-cli).
 
 ### Models
 
@@ -226,6 +227,19 @@ All built-in tools work, including `WebSearch` and `WebFetch` — see
 backend.
 
 ### Codex CLI
+
+The quick way, as with Claude Code:
+
+```sh
+claudia codex --model gpt-5.6-sol        # everything after `codex` goes to codex
+claudia codex exec -m gpt-5.6-sol "…"    # subcommands included
+```
+
+The launcher passes the provider settings below as `-c` overrides, so your
+`config.toml` is left alone, and refuses a `--model` that doesn't answer on
+the Responses API (Codex speaks nothing else) before Codex starts.
+
+#### By hand
 
 Codex speaks the Responses API, which claudia passes straight through, so it
 needs a custom model provider rather than env vars. Add to `~/.codex/config.toml`
