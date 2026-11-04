@@ -333,6 +333,59 @@ describe('proxy server with an unreachable upstream', () => {
 	});
 });
 
+describe('proxy server with a slow upstream', () => {
+	let upstreamClosed = () => { };
+	// Streams one frame, then stays open until something closes the connection.
+	const slow = http.createServer((req, res) => {
+		if (req.method === 'GET') {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end('{"data":[]}');
+			return;
+		}
+		res.on('close', () => upstreamClosed());
+		res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+		res.write(req.url === '/v1/messages'
+			? 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
+			: 'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n');
+	});
+	let proxy: Awaited<ReturnType<typeof startProxy>>;
+
+	before(async () => {
+		await new Promise<void>(resolve => slow.listen(0, '127.0.0.1', () => resolve()));
+		proxy = await startProxy({ CLAUDIA_CAPI_URL: `http://127.0.0.1:${(slow.address() as AddressInfo).port}` });
+	});
+	after(async () => {
+		await proxy.close();
+		slow.closeAllConnections();
+		await new Promise(done => slow.close(() => done(undefined)));
+	});
+
+	// Passthrough and the translating handler wire the client's abort to the upstream fetch separately.
+	for (const path of ['/v1/chat/completions', '/v1/messages']) {
+		test(`a client that disconnects mid-stream on ${path} takes the upstream request down with it`, async () => {
+			const closed = new Promise<void>(resolve => { upstreamClosed = resolve; });
+			const controller = new AbortController();
+			const response = await fetch(`${proxy.url}${path}`, {
+				method: 'POST',
+				body: JSON.stringify({ model: 'claude-x', stream: true, max_tokens: 10, messages: [{ role: 'user', content: 'hi' }] }),
+				signal: controller.signal,
+			});
+			assert.equal(response.status, 200);
+			await response.body!.getReader().read(); // mid-stream: headers and a first frame have arrived
+			controller.abort();
+			let timer: NodeJS.Timeout | undefined;
+			try {
+				await Promise.race([
+					closed,
+					new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('upstream request still open 2s after the client left')), 2000); }),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
+		});
+	}
+});
+
 describe('normalizePath', () => {
 	test('strips /v1, trailing slashes and query strings', () => {
 		assert.equal(normalizePath('/v1/chat/completions'), '/chat/completions');
