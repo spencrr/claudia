@@ -1,0 +1,9 @@
+{
+  "name": "claudia-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Real-client end-to-end tests: pins the agent CLIs so Dependabot bumps surface client drift",
+  "devDependencies": {
+    "@anthropic-ai/claude-code": "2.1.318"
+  }
+}

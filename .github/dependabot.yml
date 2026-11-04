@@ -9,6 +9,13 @@ updates:
     groups:
       dev-tooling:
         dependency-type: development
+  # The e2e CLIs: one PR per client so a failing run points at the client that moved.
+  - package-ecosystem: npm
+    directory: /e2e
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:

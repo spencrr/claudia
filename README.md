@@ -268,8 +268,15 @@ All via environment variables.
 
 ```sh
 npm run typecheck   # tsc --noEmit
-npm test            # node --test (unit + end-to-end against a fake CAPI)
+npm test            # node --test (unit + in-process server tests against a fake CAPI)
+
+cd e2e && npm ci --ignore-scripts && cd ..   # pinned Claude Code + Codex CLIs (~1 GB of native binaries)
+npm run test:e2e    # the real CLIs → `node src/main.ts` → a scripted fake CAPI
 ```
+
+The e2e CLIs are pinned in [`e2e/package.json`](e2e/package.json) so each
+Dependabot bump runs the suite against the new client version — that's how
+client-side drift (new request fields, headers, path forms) gets noticed.
 
 ## Caveats
 
