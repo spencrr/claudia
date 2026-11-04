@@ -38,7 +38,7 @@ Requires Node ≥ 22.18 (runs TypeScript directly, no build step) and either a
 ```powershell
 npm install
 npm start
-# 2026-… info  Copilot session: login=you plan=enterprise api=https://api.enterprise.githubcopilot.com
+# 2026-… info  Copilot session: login=you plan=individual api=https://api.githubcopilot.com
 # 2026-… info  claudia listening on http://127.0.0.1:4242/v1 (auth: none, loopback only)
 ```
 
