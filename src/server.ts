@@ -167,7 +167,8 @@ export function errorResponse(status: number, type: string, message: string): Re
 }
 
 async function writeResponse(res: http.ServerResponse, response: Response, requestId: string): Promise<void> {
-	const headers: Record<string, string> = { 'X-Request-Id': requestId };
+	// `Server` is how the launcher tells a running claudia apart from a stranger on the port.
+	const headers: Record<string, string> = { 'X-Request-Id': requestId, 'Server': 'claudia' };
 	for (const name of RELAYED_RESPONSE_HEADERS) {
 		const value = response.headers.get(name);
 		if (value) {
