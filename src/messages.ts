@@ -25,7 +25,7 @@ import {
 import { getCatalog, pickBackend, type Backend } from './catalog.ts';
 import { chatToEvents, responsesToEvents, toChatRequest, toResponsesRequest } from './openai.ts';
 import { passthrough, postUpstream, relayedHeaders, type ProxyContext, type ProxyRequest, type RouteHandler } from './proxy.ts';
-import { defaultWebTools, type WebTools } from './webtools.ts';
+import { createWebTools, type WebTools } from './webtools.ts';
 
 // #region Backends
 
@@ -137,11 +137,11 @@ async function execute(kind: HostedKind, call: ToolUseBlock, tools: WebTools, si
 				blocks: [use, {
 					type: 'web_search_tool_result',
 					tool_use_id: call.id,
-					content: results.map(r => ({ type: 'web_search_result', title: r.title, url: r.url, encrypted_content: '', page_age: null })),
+					content: results.map(r => ({ type: 'web_search_result', title: r.title, url: r.url, encrypted_content: '', page_age: r.pageAge })),
 				}],
 				text: results.length === 0
 					? `No results for "${query}".`
-					: results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet}`).join('\n'),
+					: results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.pageAge ? ` (updated ${r.pageAge})` : ''}\n   ${r.snippet}`).join('\n\n'),
 			};
 		}
 		const url = String(call.input.url ?? '');
@@ -211,10 +211,11 @@ async function runWithHostedTools(backend: Backend, call: Call, hosted: ServerTo
 // #region Handlers
 
 export interface MessagesOptions {
+	/** Override the per-session web tools (tests). Defaults to GitHub web search + local fetch on the session's token. */
 	readonly webTools?: WebTools;
 }
 
-export function createMessagesHandler({ webTools = defaultWebTools }: MessagesOptions = {}): RouteHandler {
+export function createMessagesHandler({ webTools }: MessagesOptions = {}): RouteHandler {
 	return async (request, ctx) => {
 		const parsed = await parseRequest(request);
 		if (parsed instanceof Response) {
@@ -229,7 +230,8 @@ export function createMessagesHandler({ webTools = defaultWebTools }: MessagesOp
 		const call: Call = { req: parsed, ctx, headers: relayedHeaders(request.headers), signal: request.signal };
 		try {
 			if (hosted.length > 0) {
-				const message = await runWithHostedTools(backend, call, hosted, webTools);
+				const tools = webTools ?? createWebTools({ apiUrl: ctx.session.apiUrl, token: ctx.session.token, fetch: ctx.fetch });
+				const message = await runWithHostedTools(backend, call, hosted, tools);
 				return parsed.stream ? sseResponse(messageToEvents(message)) : Response.json(message);
 			}
 			if (parsed.stream) {

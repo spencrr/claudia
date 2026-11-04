@@ -115,7 +115,7 @@ const fakeWebTools: WebTools & { calls: unknown[] } = {
 	calls: [],
 	async search(query, options) {
 		this.calls.push({ query, options });
-		return [{ title: 'Node.js Releases', url: 'https://nodejs.org/en/about/previous-releases', snippet: 'Release schedule' }];
+		return [{ title: 'Node.js Releases', url: 'https://nodejs.org/en/about/previous-releases', snippet: 'Release schedule', pageAge: null }];
 	},
 	async fetchPage(url) {
 		this.calls.push({ url });
