@@ -158,6 +158,14 @@ describe('createWebTools().fetchPage', () => {
 		assert.deepEqual(hops, [{ url: 'https://example.com/', address: '93.184.216.34' }], 'connects to the address the guard vetted');
 	});
 
+	test('the byte cap is exact even when one chunk crosses it, and plain text is cleaned', async () => {
+		const { request } = fakeRequest(() => new Response(new Blob(['a'.repeat(1_100_000) + '\u0007']), { headers: { 'Content-Type': 'text/plain' } }));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: resolving({ 'example.com': ['93.184.216.34'] }) });
+		const page = await tools.fetchPage('https://example.com/big.txt');
+		assert.equal(page.text.length, 100_000, 'character cap applied after an exact 1 MB byte cap');
+		assert.equal(page.text.includes('\u0007'), false);
+	});
+
 	test('a rebinding resolver cannot redirect the connection: the pinned address is the vetted one', async () => {
 		// First answer (vetting) is public; a second lookup would return loopback. There is no second lookup.
 		const answers = [['93.184.216.34'], ['127.0.0.1']];
@@ -197,10 +205,28 @@ describe('htmlToText', () => {
 		assert.equal(page.title, 'Hi & bye');
 		assert.equal(page.text, 'Head\nOne\ntwo\na\nb');
 	});
+
+	test('stays linear on adversarial whitespace and unclosed openers', () => {
+		for (const html of ['<html>' + '\r'.repeat(1_000_000), '<html>' + '\u00a0\n'.repeat(500_000), '<script'.repeat(150_000), '<head'.repeat(150_000) + '<title>'.repeat(10_000)]) {
+			const started = performance.now();
+			htmlToText(html);
+			assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms on ${html.length} chars`);
+		}
+	});
+
+	test('caps the title, strips control characters and handles entity edge cases', () => {
+		const page = htmlToText(`<html><head><title>${'t'.repeat(1000)}\u001b[31m&#27;&#0;&#x110000;&#xD800;</title></head><body>a\u0007b c\u009fd</body></html>`);
+		assert.equal(page.title?.length, 300);
+		assert.equal(page.title?.includes('\u001b'), false, 'ESC removed (raw and as &#27;)');
+		assert.equal(page.text, 'ab cd');
+	});
 });
 
 describe('decodeEntities', () => {
 	test('handles named, decimal and hex entities', () => {
 		assert.equal(decodeEntities('&lt;a&gt; &#65;&#x42; &nbsp;&unknown;'), '<a> AB  &unknown;');
+	});
+	test('leaves out-of-range and surrogate code points alone instead of throwing', () => {
+		assert.equal(decodeEntities('&#x110000;&#55296;&#x1F600;'), '&#x110000;&#55296;😀');
 	});
 });
