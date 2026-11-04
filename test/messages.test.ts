@@ -79,12 +79,21 @@ function startFakeCapi(): Promise<{ url: string; requests: Recorded[]; close: ()
 						]);
 					return;
 				case '/v1/messages': {
+					// `burst`: three parallel searches every round, never stopping — exercises budgets and the round ceiling.
+					// `fetch-probe`: one fetch of a host the tool definition forbids.
+					const rounds = (body.messages as unknown[]).filter((m: any) => m.role === 'assistant').length;
+					const burst = /burst/.test(text);
+					const fetchProbe = /fetch-probe/.test(text) && rounds === 0;
 					const message: Message = {
 						id: 'msg_native', type: 'message', role: 'assistant', model: body.model,
-						content: wantsSearch
-							? [{ type: 'text', text: 'Searching.' }, { type: 'tool_use', id: 'toolu_s', name: 'web_search', input: { query: 'node lts' } }]
-							: [{ type: 'text', text: 'native says hi' }],
-						stop_reason: wantsSearch ? 'tool_use' : 'end_turn', stop_sequence: null,
+						content: burst
+							? [0, 1, 2].map(i => ({ type: 'tool_use', id: `toolu_${rounds}_${i}`, name: 'web_search', input: { query: `q${rounds}-${i}`, allowed_domains: ['anything.example'] } } as const))
+							: fetchProbe
+								? [{ type: 'tool_use', id: 'toolu_f', name: 'web_fetch', input: { url: 'https://forbidden.example/secret?d=context' } }]
+								: wantsSearch
+									? [{ type: 'text', text: 'Searching.' }, { type: 'tool_use', id: 'toolu_s', name: 'web_search', input: { query: 'node lts' } }]
+									: [{ type: 'text', text: 'native says hi' }],
+						stop_reason: burst || fetchProbe || wantsSearch ? 'tool_use' : 'end_turn', stop_sequence: null,
 						usage: { input_tokens: 2, output_tokens: 1 },
 					};
 					if (body.stream) {
@@ -220,6 +229,60 @@ describe('/v1/messages across backends', () => {
 		assert.equal(first!.body.tools[0].name, 'web_search');
 		assert.equal(first!.body.tools[0].input_schema.required[0], 'query', 'hosted tool replaced by a JSON-schema tool');
 		assert.equal(second!.body.messages.at(-1).content[0].type, 'tool_result', 'search result fed back to the model');
+	});
+
+	test('max_uses counts executed calls, a parallel burst included; extra calls are refused, and the round ceiling is unconditional', async () => {
+		fakeWebTools.calls.length = 0;
+		const before = capi.requests.length;
+		const response = await post('/v1/messages', {
+			model: 'claude-sonnet-5-5', max_tokens: 10,
+			tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
+			messages: [{ role: 'user', content: 'burst' }],
+		});
+		assert.equal(response.status, 200);
+		const message = await response.json() as Message;
+
+		assert.equal(fakeWebTools.calls.length, 4, 'exactly max_uses searches ran (3 in round 1, 1 in round 2)');
+		const errors = message.content.filter(b => b.type === 'web_search_tool_result' && !Array.isArray((b as { content: unknown }).content));
+		assert.ok(errors.length > 0, 'calls past the budget are refused, not executed');
+		assert.equal((errors[0] as { content: { error_code: string } }).content.error_code, 'max_uses_exceeded');
+		assert.equal(message.usage.server_tool_use?.web_search_requests, 4);
+		// The fake never stops calling tools, so the loop ended on the round ceiling: 10 rounds + the final call.
+		assert.equal(capi.requests.length - before, 11);
+	});
+
+	test('a non-integer max_uses falls back to the default instead of disabling the limits', async () => {
+		fakeWebTools.calls.length = 0;
+		const before = capi.requests.length;
+		await post('/v1/messages', {
+			model: 'claude-sonnet-5-5', max_tokens: 10,
+			tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 'lots' }],
+			messages: [{ role: 'user', content: 'burst' }],
+		});
+		assert.equal(fakeWebTools.calls.length, 5, 'default budget of 5');
+		assert.equal(capi.requests.length - before, 11, 'round ceiling still applies');
+	});
+
+	test("the tool definition's domain policy is enforced: the model can narrow it, never widen it", async () => {
+		fakeWebTools.calls.length = 0;
+		await post('/v1/messages', {
+			model: 'claude-sonnet-5-5', max_tokens: 10,
+			tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1, allowed_domains: ['docs.example.com'], blocked_domains: ['tracker.example'] }],
+			messages: [{ role: 'user', content: 'burst' }],
+		});
+		// The model asked for anything.example; the definition only allows docs.example.com.
+		assert.deepEqual(fakeWebTools.calls[0], { query: 'q0-0', options: { allowedDomains: ['docs.example.com'], blockedDomains: ['tracker.example'] } });
+
+		fakeWebTools.calls.length = 0;
+		const response = await post('/v1/messages', {
+			model: 'claude-sonnet-5-5', max_tokens: 10,
+			tools: [{ type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 1, allowed_domains: ['docs.example.com'] }],
+			messages: [{ role: 'user', content: 'fetch-probe' }],
+		});
+		const message = await response.json() as Message;
+		assert.equal(fakeWebTools.calls.length, 0, 'the forbidden URL is never fetched');
+		const result = message.content.find(b => b.type === 'web_fetch_tool_result') as { content: { error_code: string } };
+		assert.equal(result.content.error_code, 'url_not_allowed');
 	});
 
 	test('count_tokens passes through for Claude and estimates for other vendors', async () => {
