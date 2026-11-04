@@ -84,16 +84,20 @@ function startFakeCapi(): Promise<{ url: string; requests: Recorded[]; close: ()
 					const rounds = (body.messages as unknown[]).filter((m: any) => m.role === 'assistant').length;
 					const burst = /burst/.test(text);
 					const fetchProbe = /fetch-probe/.test(text) && rounds === 0;
+					// `mixed`: one hosted search and one client tool in the same turn.
+					const mixed = /mixed/.test(text) && rounds === 0;
 					const message: Message = {
 						id: 'msg_native', type: 'message', role: 'assistant', model: body.model,
 						content: burst
 							? [0, 1, 2].map(i => ({ type: 'tool_use', id: `toolu_${rounds}_${i}`, name: 'web_search', input: { query: `q${rounds}-${i}`, allowed_domains: ['anything.example'] } } as const))
 							: fetchProbe
 								? [{ type: 'tool_use', id: 'toolu_f', name: 'web_fetch', input: { url: 'https://forbidden.example/secret?d=context' } }]
-								: wantsSearch
-									? [{ type: 'text', text: 'Searching.' }, { type: 'tool_use', id: 'toolu_s', name: 'web_search', input: { query: 'node lts' } }]
-									: [{ type: 'text', text: 'native says hi' }],
-						stop_reason: burst || fetchProbe || wantsSearch ? 'tool_use' : 'end_turn', stop_sequence: null,
+								: mixed
+									? [{ type: 'tool_use', id: 'toolu_m', name: 'web_search', input: { query: 'weather sources' } }, { type: 'tool_use', id: 'toolu_c', name: 'get_weather', input: { city: 'Paris' } }]
+									: wantsSearch
+										? [{ type: 'text', text: 'Searching.' }, { type: 'tool_use', id: 'toolu_s', name: 'web_search', input: { query: 'node lts' } }]
+										: [{ type: 'text', text: 'native says hi' }],
+						stop_reason: burst || fetchProbe || mixed || wantsSearch ? 'tool_use' : 'end_turn', stop_sequence: null,
 						usage: { input_tokens: 2, output_tokens: 1 },
 					};
 					if (body.stream) {
@@ -283,6 +287,26 @@ describe('/v1/messages across backends', () => {
 		assert.equal(fakeWebTools.calls.length, 0, 'the forbidden URL is never fetched');
 		const result = message.content.find(b => b.type === 'web_fetch_tool_result') as { content: { error_code: string } };
 		assert.equal(result.content.error_code, 'url_not_allowed');
+	});
+
+	test('a round mixing a hosted tool and a client tool ends the turn with both: hosted result rendered, client tool_use kept', async () => {
+		fakeWebTools.calls.length = 0;
+		const before = capi.requests.length;
+		const response = await post('/v1/messages', {
+			model: 'claude-sonnet-5-5', max_tokens: 10,
+			tools: [
+				{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+				{ name: 'get_weather', input_schema: { type: 'object', properties: { city: { type: 'string' } } } },
+			],
+			messages: [{ role: 'user', content: 'mixed' }],
+		});
+		assert.equal(response.status, 200);
+		const message = await response.json() as Message;
+		assert.equal(capi.requests.length - before, 1, 'no second upstream call: the client must run its tool first');
+		assert.equal(fakeWebTools.calls.length, 1, 'the hosted search still ran');
+		assert.deepEqual(message.content.map(b => b.type), ['server_tool_use', 'web_search_tool_result', 'tool_use']);
+		assert.equal((message.content[2] as { name: string }).name, 'get_weather');
+		assert.equal(message.stop_reason, 'tool_use');
 	});
 
 	test('count_tokens passes through for Claude and estimates for other vendors', async () => {
