@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { createWebTools, decodeEntities, htmlToText, isPublicAddress, parseGitHubSearch, withDomainOperators } from '../src/webtools.ts';
+import { createWebTools, decodeEntities, htmlToText, isPublicAddress, parseGitHubSearch, withDomainOperators, type PinnedRequest } from '../src/webtools.ts';
 
 interface Recorded { url: string; init: RequestInit | undefined }
 
@@ -119,10 +119,16 @@ describe('isPublicAddress', () => {
 
 describe('createWebTools().fetchPage', () => {
 	const resolving = (table: Record<string, string[]>) => async (host: string) => table[host] ?? [];
+	/** Fake transport recording the (url, pinned address) of every hop. */
+	function fakeRequest(respond: (url: URL) => Response) {
+		const hops: { url: string; address: string }[] = [];
+		const request: PinnedRequest = async (url, address) => { hops.push({ url: url.href, address }); return respond(url); };
+		return { request, hops };
+	}
 
 	test('refuses non-http, credentialed, dotless, localhost and private-resolving targets before any request', async () => {
-		const { fetch, calls } = fakeFetch(() => new Response('should not be reached'));
-		const tools = createWebTools({ apiUrl: 'x', token: 't', fetch, resolve: resolving({ 'internal.corp.example': ['10.0.0.5'], 'gone.example': [] }) });
+		const { request, hops } = fakeRequest(() => new Response('should not be reached'));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: resolving({ 'internal.corp.example': ['10.0.0.5'], 'gone.example': [] }) });
 		for (const [url, pattern] of [
 			['file:///etc/passwd', /only http\(s\)/],
 			['http://user:pw@example.com/', /credentials/],
@@ -139,31 +145,49 @@ describe('createWebTools().fetchPage', () => {
 		] as const) {
 			await assert.rejects(tools.fetchPage(url), pattern, url);
 		}
-		assert.equal(calls.length, 0);
+		assert.equal(hops.length, 0);
 	});
 
-	test('fetches a public page, converts HTML and bounds the body', async () => {
-		const { fetch, calls } = fakeFetch(() => new Response('<html><head><title>T</title></head><body><p>hello</p><p>' + 'x'.repeat(2_000_000) + '</p></body></html>', { headers: { 'Content-Type': 'text/html' } }));
-		const tools = createWebTools({ apiUrl: 'x', token: 't', fetch, resolve: resolving({ 'example.com': ['93.184.216.34'] }) });
+	test('fetches a public page over the vetted address, converts HTML and bounds the body', async () => {
+		const { request, hops } = fakeRequest(() => new Response('<html><head><title>T</title></head><body><p>hello</p><p>' + 'x'.repeat(2_000_000) + '</p></body></html>', { headers: { 'Content-Type': 'text/html' } }));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: resolving({ 'example.com': ['93.184.216.34'] }) });
 		const page = await tools.fetchPage('https://example.com/');
 		assert.equal(page.title, 'T');
 		assert.ok(page.text.startsWith('hello\n'));
 		assert.ok(page.text.length <= 100_000);
-		assert.equal((calls[0]?.init as RequestInit).redirect, 'manual');
+		assert.deepEqual(hops, [{ url: 'https://example.com/', address: '93.184.216.34' }], 'connects to the address the guard vetted');
 	});
 
-	test('follows redirects hop by hop and refuses one that lands on a private address', async () => {
-		const { fetch } = fakeFetch(url => url.startsWith('https://public.example/')
+	test('a rebinding resolver cannot redirect the connection: the pinned address is the vetted one', async () => {
+		// First answer (vetting) is public; a second lookup would return loopback. There is no second lookup.
+		const answers = [['93.184.216.34'], ['127.0.0.1']];
+		const { request, hops } = fakeRequest(() => new Response('ok'));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: async () => answers.shift() ?? ['127.0.0.1'] });
+		await tools.fetchPage('http://rebind.example/');
+		assert.deepEqual(hops.map(h => h.address), ['93.184.216.34']);
+	});
+
+	test('follows redirects hop by hop, re-vetting each, and refuses one that lands on a private address', async () => {
+		const { request, hops } = fakeRequest(url => url.hostname === 'public.example'
 			? new Response(null, { status: 302, headers: { Location: 'http://169.254.169.254/latest/' } })
 			: new Response('nope'));
-		const tools = createWebTools({ apiUrl: 'x', token: 't', fetch, resolve: resolving({ 'public.example': ['93.184.216.34'] }) });
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: resolving({ 'public.example': ['93.184.216.34'] }) });
 		await assert.rejects(tools.fetchPage('https://public.example/start'), /private address/);
+		assert.equal(hops.length, 1, 'the private hop is never requested');
 	});
 
 	test('gives up after too many redirects', async () => {
-		const { fetch } = fakeFetch(url => new Response(null, { status: 301, headers: { Location: url + 'x' } }));
-		const tools = createWebTools({ apiUrl: 'x', token: 't', fetch, resolve: resolving({ 'public.example': ['93.184.216.34'] }) });
+		const { request } = fakeRequest(url => new Response(null, { status: 301, headers: { Location: url.href + 'x' } }));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: resolving({ 'public.example': ['93.184.216.34'] }) });
 		await assert.rejects(tools.fetchPage('https://public.example/'), /too many redirects/);
+	});
+
+	test('an aborted signal cancels a slow DNS lookup instead of waiting it out', async () => {
+		const { request } = fakeRequest(() => new Response('ok'));
+		const tools = createWebTools({ apiUrl: 'x', token: 't', request, resolve: () => new Promise(() => { /* never resolves */ }) });
+		const controller = new AbortController();
+		setTimeout(() => controller.abort(new Error('client gone')), 20);
+		await assert.rejects(tools.fetchPage('https://slow.example/', controller.signal), /client gone/);
 	});
 });
 

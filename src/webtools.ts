@@ -10,7 +10,10 @@
  */
 
 import { lookup } from 'node:dns/promises';
+import * as http from 'node:http';
+import * as https from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import { Readable } from 'node:stream';
 import { VERSION } from './proxy.ts';
 
 export interface SearchResult {
@@ -28,14 +31,24 @@ export interface WebTools {
 	fetchPage(url: string, signal?: AbortSignal): Promise<FetchedPage>;
 }
 
+/**
+ * One hop of a page fetch, connected to `address` (already vetted) while the
+ * request still carries `url`'s hostname for Host/SNI. Returns a `Response`
+ * so the body/redirect handling is shared with the test fakes.
+ */
+export type PinnedRequest = (url: URL, address: string, headers: Record<string, string>, signal: AbortSignal) => Promise<Response>;
+
 export interface WebToolsDeps {
 	/** CAPI base URL for the session, e.g. `https://api.githubcopilot.com` — no trailing slash. */
 	readonly apiUrl: string;
 	/** Copilot (GitHub OAuth) token; the MCP endpoint accepts the same bearer as CAPI. */
 	readonly token: string;
+	/** Used for the search API call. */
 	readonly fetch?: typeof globalThis.fetch;
 	/** Hostname → addresses; injectable so the private-address guard is testable offline. */
 	readonly resolve?: (hostname: string) => Promise<string[]>;
+	/** Page fetch transport; injectable for tests. */
+	readonly request?: PinnedRequest;
 }
 
 const MAX_SNIPPET_CHARS = 1_500;
@@ -48,9 +61,10 @@ const USER_AGENT = `claudia/${VERSION}`;
 export function createWebTools(deps: WebToolsDeps): WebTools {
 	const fetchFn = deps.fetch ?? globalThis.fetch;
 	const resolve = deps.resolve ?? defaultResolve;
+	const request = deps.request ?? pinnedRequest;
 	return {
 		search: (query, options, signal) => githubWebSearch(deps.apiUrl, deps.token, fetchFn, query, options, signal),
-		fetchPage: (url, signal) => fetchPublicPage(fetchFn, resolve, url, signal),
+		fetchPage: (url, signal) => fetchPublicPage(request, resolve, url, signal),
 	};
 }
 
@@ -165,18 +179,16 @@ function filterByDomain(results: SearchResult[], { allowedDomains, blockedDomain
 
 // #region Fetch
 
-async function fetchPublicPage(fetchFn: typeof globalThis.fetch, resolve: (hostname: string) => Promise<string[]>, url: string, signal?: AbortSignal): Promise<FetchedPage> {
+async function fetchPublicPage(request: PinnedRequest, resolve: (hostname: string) => Promise<string[]>, url: string, signal?: AbortSignal): Promise<FetchedPage> {
 	const combined = AbortSignal.any([AbortSignal.timeout(FETCH_TIMEOUT_MS), ...(signal ? [signal] : [])]);
 	let target = new URL(url);
 	// Follow redirects by hand so every hop is checked: an open redirect to an
 	// internal address is the classic way around a hostname allow-check.
 	for (let hop = 0; ; hop++) {
-		await assertPublicUrl(target, resolve);
-		const response = await fetchFn(target, {
-			headers: { 'User-Agent': USER_AGENT, 'Accept': 'text/html, text/plain;q=0.9, */*;q=0.5' },
-			redirect: 'manual',
-			signal: combined,
-		});
+		// Connect to the address that was vetted, not to a second lookup's answer
+		// (DNS rebinding would otherwise pass the check and connect elsewhere).
+		const address = await assertPublicUrl(target, resolve, combined);
+		const response = await request(target, address, { 'User-Agent': USER_AGENT, 'Accept': 'text/html, text/plain;q=0.9, */*;q=0.5' }, combined);
 		if (response.status >= 300 && response.status < 400) {
 			const location = response.headers.get('location');
 			await response.body?.cancel().catch(() => undefined);
@@ -195,7 +207,8 @@ async function fetchPublicPage(fetchFn: typeof globalThis.fetch, resolve: (hostn
 	}
 }
 
-async function assertPublicUrl(target: URL, resolve: (hostname: string) => Promise<string[]>): Promise<void> {
+/** Vets `target` and returns the one address to connect to. Every resolved address must be public. */
+async function assertPublicUrl(target: URL, resolve: (hostname: string) => Promise<string[]>, signal: AbortSignal): Promise<string> {
 	if (!/^https?:$/.test(target.protocol)) {
 		throw new Error(`refusing to fetch ${target}: only http(s) URLs are allowed`);
 	}
@@ -206,7 +219,7 @@ async function assertPublicUrl(target: URL, resolve: (hostname: string) => Promi
 	if (hostname === 'localhost' || hostname.endsWith('.localhost') || (!isIP(hostname) && !hostname.includes('.'))) {
 		throw new Error(`refusing to fetch ${target.hostname}: not a public host`);
 	}
-	const addresses = isIP(hostname) ? [hostname] : await resolve(hostname);
+	const addresses = isIP(hostname) ? [hostname] : await abortable(resolve(hostname), signal);
 	if (addresses.length === 0) {
 		throw new Error(`refusing to fetch ${target.hostname}: hostname does not resolve`);
 	}
@@ -215,12 +228,47 @@ async function assertPublicUrl(target: URL, resolve: (hostname: string) => Promi
 			throw new Error(`refusing to fetch ${target.hostname}: resolves to a private address`);
 		}
 	}
+	return addresses[0]!;
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) {
+		return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'));
+		signal.addEventListener('abort', onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+	});
 }
 
 async function defaultResolve(hostname: string): Promise<string[]> {
 	const records = await lookup(hostname, { all: true });
 	return records.map(record => record.address);
 }
+
+/** `node:http(s)` request whose socket connects to `address` while Host and TLS SNI still come from `url`. */
+const pinnedRequest: PinnedRequest = (url, address, headers, signal) => new Promise<Response>((resolve, reject) => {
+	const family = isIP(address) === 6 ? 6 : 4;
+	const client = url.protocol === 'https:' ? https : http;
+	const req = client.request(url, {
+		headers,
+		signal,
+		lookup: (_hostname, _options, callback) => callback(null, [{ address, family }]),
+	}, res => {
+		const responseHeaders = new Headers();
+		for (const [name, value] of Object.entries(res.headers)) {
+			if (typeof value === 'string') {
+				responseHeaders.set(name, value);
+			}
+		}
+		const status = res.statusCode ?? 0;
+		// Response.status must be 200–599; map anything else so the caller's status checks still see a failure.
+		resolve(new Response(Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: status >= 200 && status <= 599 ? status : 599, headers: responseHeaders }));
+	});
+	req.on('error', reject);
+	req.end();
+});
 
 /**
  * Non-public ranges. `BlockList` normalizes IPv4-mapped IPv6 (`::ffff:7f00:1`,
