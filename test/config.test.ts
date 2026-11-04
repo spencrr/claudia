@@ -58,7 +58,7 @@ describe('loadConfig', () => {
 			['CLAUDIA_CAPI_URL', 'https://user:pw@capi.example.com'],
 			['CLAUDIA_CAPI_URL', 'https://capi.example.com/?x=1'],
 		] as const) {
-			assert.throws(() => loadConfig({ [name]: value }), new RegExp(name), `${name}=${value}`);
+			assert.throws(() => loadConfig({ [name]: value }), (err: Error) => err.message.includes(name), `${name}=${value}`);
 		}
 	});
 
