@@ -25,6 +25,14 @@ describe('resolveGitHubToken', () => {
 		assert.equal(await resolveGitHubToken({ githubToken: 'gho_explicit', githubUser: 'ignored' }), 'gho_explicit');
 	});
 
+	test('refuses a token that is not a valid header value, without echoing it', async () => {
+		await assert.rejects(resolveGitHubToken({ githubToken: 'gho_abc\r\nX-Injected: 1', githubUser: undefined }), err => {
+			assert.match((err as Error).message, /not a valid token/);
+			assert.equal((err as Error).message.includes('gho_abc'), false, 'the token value must not appear in the error');
+			return true;
+		});
+	});
+
 	test('fails clearly when the requested gh account does not exist', async () => {
 		await assert.rejects(
 			resolveGitHubToken({ githubToken: undefined, githubUser: 'no-such-user-claudia-test' }),
@@ -86,6 +94,12 @@ describe('createUpstreamResolver', () => {
 		const { fetch } = fakeFetch(() => Response.json({ login: 'x' }));
 		const resolver = createUpstreamResolver(loadConfig({}), silentLogger, { fetch, resolveToken: async () => 't' });
 		assert.equal((await resolver.get()).apiUrl, 'https://api.githubcopilot.com');
+	});
+
+	test('refuses a discovered endpoint that is not https', async () => {
+		const { fetch } = fakeFetch(() => Response.json({ login: 'x', endpoints: { api: 'http://capi.example.com' } }));
+		const resolver = createUpstreamResolver(loadConfig({}), silentLogger, { fetch, resolveToken: async () => 't' });
+		await assert.rejects(resolver.get(), /endpoints\.api must use https/);
 	});
 
 	test('CLAUDIA_CAPI_URL skips discovery entirely', async () => {

@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import * as http from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -135,8 +135,10 @@ export function isAuthorized(headers: { authorization?: string | undefined; 'x-a
 	if (presented === undefined) {
 		return false;
 	}
-	const digest = (value: string) => createHash('sha256').update(value).digest();
-	return timingSafeEqual(digest(presented), digest(apiKey));
+	const a = Buffer.from(presented);
+	const b = Buffer.from(apiKey);
+	// timingSafeEqual needs equal lengths; the key's length is not a secret worth hiding.
+	return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**

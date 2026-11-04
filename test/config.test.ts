@@ -45,6 +45,23 @@ describe('loadConfig', () => {
 		assert.throws(() => loadConfig({ CLAUDIA_LOG_LEVEL: 'verbose' }), /CLAUDIA_LOG_LEVEL/);
 	});
 
+	test('token destinations must be https, or http on loopback only', () => {
+		assert.equal(loadConfig({ CLAUDIA_CAPI_URL: 'http://127.0.0.1:9999/' }).capiUrl, 'http://127.0.0.1:9999');
+		assert.equal(loadConfig({ CLAUDIA_CAPI_URL: 'http://localhost:9999' }).capiUrl, 'http://localhost:9999');
+		assert.equal(loadConfig({ CLAUDIA_GITHUB_API_URL: 'https://api.acme.ghe.com/' }).githubApiUrl, 'https://api.acme.ghe.com');
+		for (const [name, value] of [
+			['CLAUDIA_CAPI_URL', 'http://capi.example.com'],
+			['CLAUDIA_CAPI_URL', 'http://192.168.1.5:4242'],
+			['CLAUDIA_GITHUB_API_URL', 'http://api.github.com'],
+			['CLAUDIA_CAPI_URL', 'ftp://capi.example.com'],
+			['CLAUDIA_CAPI_URL', 'not a url'],
+			['CLAUDIA_CAPI_URL', 'https://user:pw@capi.example.com'],
+			['CLAUDIA_CAPI_URL', 'https://capi.example.com/?x=1'],
+		] as const) {
+			assert.throws(() => loadConfig({ [name]: value }), (err: Error) => err.message.includes(name), `${name}=${value}`);
+		}
+	});
+
 	test('refuses a non-loopback bind without an API key', () => {
 		assert.throws(() => loadConfig({ CLAUDIA_HOST: '0.0.0.0' }), /CLAUDIA_API_KEY/);
 		assert.doesNotThrow(() => loadConfig({ CLAUDIA_HOST: '0.0.0.0', CLAUDIA_API_KEY: 'k' }));
