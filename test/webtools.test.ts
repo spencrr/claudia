@@ -210,7 +210,8 @@ describe('htmlToText', () => {
 		for (const html of ['<html>' + '\r'.repeat(1_000_000), '<html>' + '\u00a0\n'.repeat(500_000), '<script'.repeat(150_000), '<head'.repeat(150_000) + '<title>'.repeat(10_000)]) {
 			const started = performance.now();
 			htmlToText(html);
-			assert.ok(performance.now() - started < 500, `took ${Math.round(performance.now() - started)} ms on ${html.length} chars`);
+			// The quadratic version took minutes on these inputs; the bound only has to separate linear from that on a slow CI runner.
+			assert.ok(performance.now() - started < 2_000, `took ${Math.round(performance.now() - started)} ms on ${html.length} chars`);
 		}
 	});
 
