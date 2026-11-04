@@ -3,7 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { loadConfig } from '../src/config.ts';
-import { claudeEnv, ensureProxy, fetchCatalog, peekModel, quoteForCmd, runClient, type Proxy } from '../src/launch.ts';
+import { claudeEnv, codexArgs, codexEnv, ensureProxy, fetchCatalog, peekModel, quoteForCmd, runClient, type Proxy } from '../src/launch.ts';
 import type { OpenAIModel } from '../src/routes.ts';
 
 const model = (id: string, extra: Partial<OpenAIModel> = {}): OpenAIModel => ({ id, object: 'model', created: 0, owned_by: 'x', supported_endpoints: [], ...extra });
@@ -56,6 +56,25 @@ describe('claudeEnv', () => {
 	test('an unknown concrete id fails before the client starts, naming the source and listing what exists', () => {
 		assert.throws(() => claudeEnv({}, proxy, catalog, 'gpt-7'), /--model gpt-7 is not in the Copilot catalog[\s\S]*gpt-6-astra/);
 		assert.throws(() => claudeEnv({ ANTHROPIC_MODEL: 'gpt-7' }, proxy, catalog, undefined), /^Error: ANTHROPIC_MODEL is not in the Copilot catalog/);
+	});
+});
+
+describe('codexArgs / codexEnv', () => {
+	const responsesCatalog = [...catalog, model('gpt-5.6-sol', { supported_endpoints: ['/responses'] })];
+
+	test('prepends the provider overrides, unquoted, and forwards the arguments', () => {
+		const args = codexArgs(proxy, ['exec', '-m', 'gpt-5.6-sol', 'hi']);
+		assert.deepEqual(args.slice(-4), ['exec', '-m', 'gpt-5.6-sol', 'hi']);
+		assert.ok(args.includes('model_providers.claudia.base_url=http://127.0.0.1:1/v1'));
+		assert.ok(args.includes('model_providers.claudia.wire_api=responses'));
+		assert.ok(!args.some(arg => arg.includes('"')));
+	});
+
+	test('supplies the provider key and only lets Responses-capable models through', () => {
+		assert.equal(codexEnv({ OPENAI_API_KEY: 'sk-real' }, proxy, responsesCatalog, 'gpt-5.6-sol').OPENAI_API_KEY, 'unused');
+		assert.equal(codexEnv({}, { ...proxy, apiKey: 'k' }, responsesCatalog, undefined).OPENAI_API_KEY, 'k');
+		assert.throws(() => codexEnv({}, proxy, responsesCatalog, 'claude-sonnet-5-5'), /does not answer on the Responses API[\s\S]*gpt-5\.6-sol/);
+		assert.throws(() => codexEnv({}, proxy, responsesCatalog, 'gpt-7'), /is not in the Copilot catalog[\s\S]*gpt-5\.6-sol/);
 	});
 });
 

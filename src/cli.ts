@@ -2,14 +2,15 @@
 /**
  * claudia                   run the proxy (same as `node src/main.ts`)
  * claudia claude [args…]    launch Claude Code through claudia; args go to claude
+ * claudia codex [args…]     launch Codex through claudia; args go to codex
  *
  * The launcher reuses a claudia already listening on CLAUDIA_HOST:CLAUDIA_PORT,
  * otherwise runs one inside this process for as long as the client lives.
  */
 import { loadConfig } from './config.ts';
-import { claudeEnv, ensureProxy, fetchCatalog, peekModel, runClient } from './launch.ts';
+import { claudeEnv, codexArgs, codexEnv, ensureProxy, fetchCatalog, peekModel, runClient } from './launch.ts';
 
-const USAGE = 'usage: claudia [serve | claude [args…]]';
+const USAGE = 'usage: claudia [serve | claude [args…] | codex [args…]]';
 const [command = 'serve', ...args] = process.argv.slice(2);
 
 try {
@@ -17,12 +18,17 @@ try {
 		case 'serve':
 			await import('./main.ts');
 			break;
-		case 'claude': {
+		case 'claude':
+		case 'codex': {
 			const proxy = await ensureProxy(loadConfig());
 			try {
-				const env = claudeEnv(process.env, proxy, await fetchCatalog(proxy), peekModel(args));
+				const catalog = await fetchCatalog(proxy);
+				const model = peekModel(args);
+				const [env, clientArgs] = command === 'claude'
+					? [claudeEnv(process.env, proxy, catalog, model), args]
+					: [codexEnv(process.env, proxy, catalog, model), codexArgs(proxy, args)];
 				process.on('SIGINT', () => { }); // Ctrl+C belongs to the client; we leave when it does
-				process.exitCode = await runClient('claude', args, env);
+				process.exitCode = await runClient(command, clientArgs, env);
 			} finally {
 				proxy.close();
 			}
