@@ -343,6 +343,11 @@ describe('normalizePath', () => {
 		assert.equal(normalizePath('/'), '/');
 		assert.equal(normalizePath('/v10/models'), '/v10/models');
 	});
+	test('collapses doubled slashes from a trailing-slash base_url (Codex)', () => {
+		assert.equal(normalizePath('//responses'), '/responses');
+		assert.equal(normalizePath('/v1//responses'), '/responses');
+		assert.equal(normalizePath('//v1/models'), '/models');
+	});
 });
 
 describe('isAuthorized', () => {
