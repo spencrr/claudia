@@ -20,7 +20,8 @@
     "start": "node src/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"test/**/*.test.ts\"",
-    "test:e2e": "node --test \"e2e/**/*.test.ts\""
+    "test:e2e": "node --test \"e2e/**/*.test.ts\"",
+    "check:live": "node scripts/live-check.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

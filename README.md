@@ -278,6 +278,15 @@ The e2e CLIs are pinned in [`e2e/package.json`](e2e/package.json) so each
 Dependabot bump runs the suite against the new client version — that's how
 client-side drift (new request fields, headers, path forms) gets noticed.
 
+Both suites run against fakes, so they can't see the upstream contract move
+(which models answer on which endpoint, the Responses minimum output tokens,
+stream shapes, the MCP search endpoint). For that there is a manual check
+against the real API, using your Copilot session and about eight requests:
+
+```sh
+npm run check:live
+```
+
 ## Caveats
 
 * `copilot_internal/*` and CAPI are undocumented GitHub endpoints; behaviour
