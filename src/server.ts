@@ -27,16 +27,15 @@ export function createServer(options: ServerOptions): http.Server {
 		const requestId = randomUUID();
 		const startedAt = performance.now();
 		const method = req.method ?? 'GET';
-		const path = normalizePath(req.url ?? '/');
+		// Everything from here on is inside the error boundary: an unhandled rejection in this
+		// callback would take the process down, and the request line is attacker-controlled.
+		let path = req.url ?? '/';
 		const abort = new AbortController();
 		res.on('close', () => abort.abort());
 
 		try {
+			path = normalizePath(path);
 			const response = await dispatch(method, path, req, abort.signal, requestId);
-			if (response.status === 401 || response.status === 403) {
-				// Could be a rotated/revoked token — re-resolve on the next request.
-				upstream.invalidate();
-			}
 			await writeResponse(res, response, requestId);
 			log.info(`[${requestId}] ${method} ${path} → ${response.status} ${elapsed(startedAt)}`);
 		} catch (err) {
@@ -44,11 +43,15 @@ export function createServer(options: ServerOptions): http.Server {
 				log.info(`[${requestId}] ${method} ${path} → client disconnected ${elapsed(startedAt)}`);
 				return;
 			}
-			log.error(`[${requestId}] ${method} ${path} failed: ${err instanceof Error ? err.message : String(err)}`);
+			const failure = err instanceof RequestError
+				? errorResponse(err.status, 'invalid_request_error', err.message)
+				: errorResponse(502, 'api_error', `Upstream request failed: ${err instanceof Error ? err.message : String(err)}`);
+			log[failure.status >= 500 ? 'error' : 'info'](`[${requestId}] ${method} ${path} → ${failure.status} ${err instanceof Error ? err.message : String(err)}`);
 			if (res.headersSent) {
 				res.destroy();
 			} else {
-				await writeResponse(res, errorResponse(502, 'api_error', `Upstream request failed: ${err instanceof Error ? err.message : String(err)}`), requestId);
+				// The client may already be gone; a failed error write must not escape the boundary.
+				await writeResponse(res, failure, requestId).catch(() => res.destroy());
 			}
 		}
 	});
@@ -60,6 +63,15 @@ export function createServer(options: ServerOptions): http.Server {
 		if (!isAuthorized(req.headers, config.apiKey)) {
 			return errorResponse(401, 'authentication_error', 'Invalid API key');
 		}
+		const response = await route(method, path, req, signal, requestId);
+		if (response.status === 401 || response.status === 403) {
+			// Only upstream verdicts reach here (our own 401 returned above), so the token may have been rotated or revoked.
+			upstream.invalidate();
+		}
+		return response;
+	}
+
+	async function route(method: string, path: string, req: http.IncomingMessage, signal: AbortSignal, requestId: string): Promise<Response> {
 		const matching = routes.filter(route => route.path === path);
 		if (matching.length === 0) {
 			return errorResponse(404, 'not_found_error', `No route for ${method} ${path}`);
@@ -82,9 +94,26 @@ export function createServer(options: ServerOptions): http.Server {
 	}
 }
 
+/** A client-side failure that should be answered with `status` rather than treated as an upstream fault. */
+export class RequestError extends Error {
+	readonly status: number;
+	constructor(status: number, message: string) {
+		super(message);
+		this.status = status;
+	}
+}
+
+/** Largest request body accepted; generous enough for base64 images, small enough that one request cannot exhaust memory. */
+export const MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024;
+
 /** Accepts both `/v1/chat/completions` (OpenAI SDK default) and bare `/chat/completions`. */
 export function normalizePath(url: string): string {
-	const { pathname } = new URL(url, 'http://localhost');
+	let pathname: string;
+	try {
+		({ pathname } = new URL(url, 'http://localhost'));
+	} catch {
+		throw new RequestError(400, 'Malformed request target');
+	}
 	const stripped = pathname.replace(/^\/v1(?=\/|$)/, '').replace(/\/+$/, '');
 	return stripped === '' ? '/' : stripped;
 }
@@ -129,9 +158,26 @@ async function writeResponse(res: http.ServerResponse, response: Response, reque
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
+	const declared = Number(req.headers['content-length']);
+	if (declared > MAX_REQUEST_BODY_BYTES) {
+		return Promise.reject(new RequestError(413, 'Request body too large'));
+	}
 	return new Promise((resolve, reject) => {
 		const chunks: Buffer[] = [];
-		req.on('data', (chunk: Buffer) => chunks.push(chunk));
+		let received = 0;
+		req.on('data', (chunk: Buffer) => {
+			received += chunk.length;
+			if (received > MAX_REQUEST_BODY_BYTES) {
+				// Also covers chunked bodies and lying Content-Length headers. Stop buffering
+				// but leave the socket open so the 413 can be delivered.
+				chunks.length = 0;
+				req.removeAllListeners('data');
+				req.resume();
+				reject(new RequestError(413, 'Request body too large'));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
 		req.on('error', reject);
 	});

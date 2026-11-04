@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import * as http from 'node:http';
+import * as net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { after, before, describe, test } from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { loadConfig } from '../src/config.ts';
 import { createUpstreamResolver, type UpstreamResolver } from '../src/github.ts';
 import { silentLogger } from '../src/log.ts';
-import { createServer, isAuthorized, normalizePath } from '../src/server.ts';
+import { createServer, isAuthorized, MAX_REQUEST_BODY_BYTES, normalizePath } from '../src/server.ts';
 
 interface RecordedRequest {
 	method: string;
@@ -211,6 +212,37 @@ describe('proxy server', () => {
 		const wrongMethod = await fetch(`${proxy.url}/v1/chat/completions`);
 		assert.equal(wrongMethod.status, 405);
 	});
+
+	test('a malformed request target gets a 400 and the process stays up', async () => {
+		const { port } = new URL(proxy.url);
+		const statusLine = await new Promise<string>((resolve, reject) => {
+			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write('GET http://[ HTTP/1.1\r\nHost: x\r\n\r\n'));
+			socket.once('data', data => { resolve(data.toString().split('\r\n')[0] ?? ''); socket.destroy(); });
+			socket.on('error', reject);
+		});
+		assert.match(statusLine, /^HTTP\/1\.1 400/);
+		assert.equal((await fetch(`${proxy.url}/`)).status, 200, 'server still answers afterwards');
+	});
+
+	test('refuses oversized request bodies with 413, declared or streamed', async () => {
+		const { port } = new URL(proxy.url);
+		const declared = await new Promise<string>((resolve, reject) => {
+			const socket = net.connect(Number(port), '127.0.0.1', () => socket.write(`POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${MAX_REQUEST_BODY_BYTES + 1}\r\n\r\n{}`));
+			socket.once('data', data => { resolve(data.toString().split('\r\n')[0] ?? ''); socket.destroy(); });
+			socket.on('error', reject);
+		});
+		assert.match(declared, /^HTTP\/1\.1 413/, 'a Content-Length over the cap is refused before any body is read');
+
+		const chunk = Buffer.alloc(1024 * 1024, 0x61);
+		const streamed = await fetch(`${proxy.url}/v1/chat/completions`, {
+			method: 'POST',
+			body: new ReadableStream({ pull(controller) { for (let i = 0; i < 65; i++) { controller.enqueue(chunk); } controller.close(); } }),
+			duplex: 'half',
+		} as RequestInit);
+		assert.equal(streamed.status, 413, 'a chunked body is refused once it passes the cap');
+		assert.equal(((await streamed.json()) as { error: { type: string } }).error.type, 'invalid_request_error');
+		assert.equal((await fetch(`${proxy.url}/`)).status, 200, 'server still answers afterwards');
+	});
 });
 
 describe('proxy server with an API key', () => {
@@ -226,11 +258,13 @@ describe('proxy server with an API key', () => {
 		await capi.close();
 	});
 
-	test('rejects missing or wrong keys before touching upstream', async () => {
+	test('rejects missing or wrong keys before touching upstream, without invalidating the session', async () => {
 		const before = capi.requests.length;
+		const invalidations = proxy.invalidations();
 		assert.equal((await fetch(`${proxy.url}/v1/models`)).status, 401);
 		assert.equal((await fetch(`${proxy.url}/v1/models`, { headers: { Authorization: 'Bearer nope' } })).status, 401);
 		assert.equal(capi.requests.length, before);
+		assert.equal(proxy.invalidations(), invalidations, 'our own 401 must not force a token re-resolution');
 	});
 
 	test('accepts the configured key as a bearer token or as x-api-key', async () => {
