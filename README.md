@@ -25,10 +25,10 @@ OpenAI client ──▶ 127.0.0.1:4242/v1/chat/completions ──▶ https://api
 4. **Translation** — CAPI serves each vendor on one format only, so
    `/v1/messages` (Anthropic format) additionally translates to Chat
    Completions or Responses for non-Claude models. This is what lets Claude
-   Code run GPT, Gemini and Grok.
-5. **Hosted tools** — Anthropic's server-side `web_search` / `web_fetch` tools
-   are rejected by CAPI; claudia executes them locally (Bing RSS, direct HTTP)
-   and returns the results in Anthropic's native block shapes.
+   Code run GPT, Gemini and Grok. See [How requests are routed](#how-requests-are-routed).
+5. **Web tools** — Anthropic's hosted `web_search` / `web_fetch` tools are
+   rejected by CAPI; claudia runs them itself, using GitHub's own web search
+   service for search. See [Web tools](#web-tools).
 
 ## Usage
 
@@ -56,20 +56,66 @@ await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 Google, xAI and experimental vendors alike. Each entry carries non-standard
 hints from CAPI's catalog — `supported_endpoints`, `context_window`,
 `max_output_tokens`, `tool_calls`, `vision` — which clients such as Lestat (the
-companion VS Code extension in `../lestat`) use to size requests. CAPI serves
-each vendor on one wire format only:
-
-| Model family | CAPI serves it on | Reachable via |
-|---|---|---|
-| `claude-*` | `/v1/messages`, `/chat/completions` | `/v1/messages`, `/v1/chat/completions` |
-| `gpt-5*`, `gpt-6*`, `grok-*` | `/responses` | `/v1/responses`, `/v1/messages` (translated) |
-| `gpt-4*`, `gemini-*`, `mai-*` | `/chat/completions` (empty hint) | `/v1/chat/completions`, `/v1/messages` (translated) |
-
-Using an OpenAI route a model doesn't support returns CAPI's own 400
-(`unsupported_api_for_model`); `/v1/messages` works for every model. Part of
-the catalog is only served when the `Copilot-Integration-Id` header is present,
-so claudia sends `vscode-chat` by default; set `CLAUDIA_INTEGRATION_ID=none` to
+companion VS Code extension in `../lestat`) use to size requests. Part of the
+catalog is only served when the `Copilot-Integration-Id` header is present, so
+claudia sends `vscode-chat` by default; set `CLAUDIA_INTEGRATION_ID=none` to
 omit it and lose those models.
+
+### How requests are routed
+
+CAPI is **not** a format-translating gateway: each model answers only on the
+wire format(s) its vendor backend speaks, advertised per model as
+`supported_endpoints`. Claudia treats that list as authoritative. The format a
+client speaks to claudia and the format claudia speaks to CAPI are therefore
+independent — `/v1/messages` in does not mean `/v1/messages` out.
+
+| Model family | CAPI accepts | `/v1/messages` (Anthropic clients) goes to | OpenAI routes |
+|---|---|---|---|
+| `claude-*` | `/v1/messages`, `/chat/completions` | `/v1/messages`, verbatim | `/v1/chat/completions` passes through |
+| `gpt-5*`, `gpt-6*`, `grok-*` | `/responses` only | `/responses`, translated | `/v1/responses` passes through |
+| `gemini-*`, `gpt-4*`, `mai-code-1.1` | `/chat/completions` only | `/chat/completions`, translated | `/v1/chat/completions` passes through |
+| `mai-code-2-flash` | both OpenAI formats | `/responses`, translated | either |
+
+Consequences worth knowing:
+
+* Using an OpenAI route a model doesn't support returns CAPI's own 400
+  (`unsupported_api_for_model`). `/v1/messages` works for every model because
+  claudia picks the backend.
+* Claude models cannot be reached through `/responses` or any OpenAI-format
+  path other than `/chat/completions` — CAPI returns 400 (verified 2026-11-03).
+  A Messages→Responses wrapper for Claude has nothing to talk to upstream.
+* Translation drops what the target format can't carry: Anthropic `thinking`
+  blocks in history, and vendor reasoning state across turns. Tool loops still
+  work; the model re-derives context.
+
+### Web tools
+
+Claude Code's `WebSearch` is Anthropic's hosted `web_search` tool, and CAPI
+rejects every hosted search tool for Claude models — Anthropic's
+`web_search_20250305` on `/v1/messages` and OpenAI-style `web_search` on
+`/chat/completions` both return 400 (verified 2026-11-03). So claudia
+intercepts the hosted `web_search` / `web_fetch` tool definitions, swaps in
+ordinary JSON-schema tools, runs them, and renders the results back as
+Anthropic `server_tool_use` / `web_search_tool_result` blocks so clients show
+sources natively.
+
+| Tool | Backend | Notes |
+|---|---|---|
+| `web_search` | **GitHub's web search service** — the `web_search` tool of the GitHub MCP server at `{capi}/mcp`, called with the same Copilot token | The backend Copilot CLI uses. One stateless JSON-RPC call per search, ~0.5 s, two ranked results with long snippets and recency. `allowed_domains` / `blocked_domains` become `site:` / `-site:` operators plus a post-filter. Queries stay inside GitHub. |
+| `web_fetch` | Local HTTP GET, HTML → text | The same model Copilot CLI and Claude Code use (both fetch client-side). Refuses loopback, private, link-local/metadata, CGNAT and ULA addresses, re-checks every redirect hop, caps bodies at 1 MB / 100K chars and requests at 30 s. |
+
+Two things deliberately **not** done:
+
+* OpenAI's native `web_search` on `/responses` does work through CAPI for
+  `gpt-5*`/`gpt-6*`/`grok-*` (output contains `web_search_call` items), but it
+  would be a second search path serving only those models, with weaker source
+  metadata (citations arrived as empty `annotations` in testing). GitHub's
+  search covers every model uniformly.
+* Declaring `web_search` on `/chat/completions` is tolerated for Gemini/GPT-4
+  but not executed — the model answers that it has no internet access.
+
+Costs: each search round is one extra model call plus the search; Claude Code's
+`max_uses` (default 5) bounds the loop, capped at 10 rounds.
 
 ### Claude Code
 
@@ -146,12 +192,9 @@ Or make it permanent for every shell in `~/.claude/settings.json`
 `opus` / `sonnet` aliases if you use those. The `total_cost_usd` Claude Code
 prints is its Anthropic list-price estimate, not what Copilot bills.
 
-All built-in tools work. `WebSearch` and `WebFetch` would normally rely on
-Anthropic's hosted search backend, which CAPI refuses; claudia intercepts the
-hosted `web_search` / `web_fetch` tool definitions, runs the searches itself
-(Bing RSS, no API key) and hands the results back in Anthropic's own block
-shapes, so the CLI renders sources as usual. Search queries therefore leave
-your machine towards Bing with a `claudia/<version>` user agent.
+All built-in tools work, including `WebSearch` and `WebFetch` — see
+[Web tools](#web-tools) for how they are served without Anthropic's hosted
+backend.
 
 ## Routes
 
@@ -209,9 +252,10 @@ npm test            # node --test (unit + end-to-end against a fake CAPI)
   the proxy on loopback or behind `CLAUDIA_API_KEY`.
 * Not supported: embeddings, Anthropic hosted tools other than web search /
   fetch (code execution, computer use, memory), models outside the Copilot
-  catalog. Vendor reasoning state (OpenAI reasoning items, Gemini thought
-  signatures) is not carried across turns through the Anthropic format; tool
-  loops still work, the model just re-derives context.
-* Local web search is "best effort": Bing RSS, up to 10 results, no paging.
-  Swap `defaultWebTools` in [`src/webtools.ts`](src/webtools.ts) for another
-  provider if you need more.
+  catalog. See [How requests are routed](#how-requests-are-routed) for what
+  translation drops.
+* Web search returns GitHub's two top results per query (no paging). The
+  `WebTools` interface in [`src/webtools.ts`](src/webtools.ts) is the seam if
+  you need a different backend.
+* The routing and web-tool facts above are empirical (probed 2026-11-03); CAPI
+  may change them without notice.
