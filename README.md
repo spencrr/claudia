@@ -50,6 +50,10 @@ await client.chat.completions.create({ model: 'claude-sonnet-5.5', messages: [{ 
 await client.responses.create({ model: 'gpt-5.6-sol', input: 'hi' });
 ```
 
+To use it from an agent CLI you don't even need the server running first:
+`claudia claude --model gpt-6-astra` brings one up for the session — see
+[Claude Code](#claude-code).
+
 ### Models
 
 `GET /v1/models` lists every chat model your account can use — OpenAI, Anthropic,
@@ -121,6 +125,28 @@ searches is three uses — and calls past it are answered with
 
 ### Claude Code
 
+The quick way is to let claudia launch it:
+
+```sh
+npm link                            # once, from the clone: puts `claudia` on your PATH
+claudia claude --model gpt-6-astra  # everything after `claude` goes to Claude Code
+```
+
+`claudia claude` reuses a claudia already listening on `CLAUDIA_PORT` (your
+`npm start`), otherwise it runs one inside the launcher for as long as the
+session lasts — private to that session, so two launchers never share a proxy
+that one of them will take down. It points Claude Code at the proxy, checks
+`--model` against the catalog (listing it when the id is unknown), sets
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` for non-Claude ids, picks a Claude Haiku for
+background tasks and turns off Claude Code's update and telemetry calls.
+Anything already set in your environment wins; `ANTHROPIC_API_KEY` is dropped
+so it cannot shadow the proxy. Don't combine the launcher with a permanent
+`ANTHROPIC_BASE_URL` in `settings.json` (below): Claude Code applies that file
+over the environment, so it would pin every session to one port whether or
+not a proxy is listening there.
+
+#### By hand
+
 Claude Code talks to whatever `ANTHROPIC_BASE_URL` points at, so it only needs
 env vars — no plugin. Any catalog model works, Claude or not. Its default model
 (`claude-fable-*`) is not in the Copilot catalog, so set one explicitly:
@@ -149,7 +175,8 @@ and friends it says so in two harmless ways:
   notice only; the request is still sent as configured.
 * A startup banner `Model "gpt-6-astra" isn't recognized · context assumed to be
   200k tokens`. It can't look up the window, so it defaults to 200K and compacts
-  early. Tell it the real window (`context_window` on `GET /v1/models`):
+  early. Tell it the real window (`context_window` on `GET /v1/models`; the
+  launcher does this for you):
 
   ```powershell
   $env:ANTHROPIC_MODEL = 'gpt-6-astra'

@@ -105,11 +105,12 @@ describe('proxy server', () => {
 		await capi.close();
 	});
 
-	test('health check needs no auth and hits nothing upstream', async () => {
+	test('health check needs no auth, hits nothing upstream and identifies the server', async () => {
 		const before = capi.requests.length;
 		const response = await fetch(`${proxy.url}/`);
 		assert.equal(response.status, 200);
 		assert.equal(await response.text(), 'ok');
+		assert.equal(response.headers.get('server'), 'claudia');
 		assert.equal(capi.requests.length, before);
 	});
 

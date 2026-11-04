@@ -176,7 +176,7 @@ export interface Claudia {
 	close(): void;
 }
 
-function freePort(): Promise<number> {
+export function freePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
 		const probe = net.createServer();
 		probe.once('error', reject);
@@ -246,8 +246,8 @@ export function run(file: string, args: readonly string[], options: { cwd: strin
 	});
 }
 
-/** The caller's shell may carry real Anthropic/OpenAI/CLI settings; keep them out of the clients under test. */
+/** The caller's shell may carry real Anthropic/OpenAI/CLI/claudia settings; keep them out of the processes under test. */
 export function cleanEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
-	const inherited = Object.entries(process.env).filter(([key]) => !/^(ANTHROPIC_|CLAUDE_|OPENAI_|CODEX_)/i.test(key));
+	const inherited = Object.entries(process.env).filter(([key]) => !/^(ANTHROPIC_|CLAUDE_|CLAUDIA_|OPENAI_|CODEX_)/i.test(key));
 	return { ...Object.fromEntries(inherited), ...overrides };
 }
