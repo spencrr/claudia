@@ -30,8 +30,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		apiKey: env.CLAUDIA_API_KEY || undefined,
 		githubToken: env.GITHUB_TOKEN || undefined,
 		githubUser: env.CLAUDIA_GITHUB_USER || undefined,
-		githubApiUrl: stripTrailingSlash(env.CLAUDIA_GITHUB_API_URL || 'https://api.github.com'),
-		capiUrl: env.CLAUDIA_CAPI_URL ? stripTrailingSlash(env.CLAUDIA_CAPI_URL) : undefined,
+		githubApiUrl: tokenDestination('CLAUDIA_GITHUB_API_URL', env.CLAUDIA_GITHUB_API_URL || 'https://api.github.com'),
+		capiUrl: env.CLAUDIA_CAPI_URL ? tokenDestination('CLAUDIA_CAPI_URL', env.CLAUDIA_CAPI_URL) : undefined,
 		integrationId: parseIntegrationId(env.CLAUDIA_INTEGRATION_ID),
 		logLevel: parseLogLevel(env.CLAUDIA_LOG_LEVEL || 'info'),
 	};
@@ -69,6 +69,23 @@ function parseIntegrationId(value: string | undefined): string | undefined {
 	return value === 'none' ? undefined : value;
 }
 
-function stripTrailingSlash(url: string): string {
-	return url.replace(/\/+$/, '');
+/**
+ * A base URL the Copilot token will be sent to. Must be `https:`; plain
+ * `http:` is allowed only for loopback hosts (local test doubles), so a
+ * mistyped override cannot put the token on the wire in clear text.
+ */
+export function tokenDestination(name: string, value: string): string {
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new Error(`${name} must be an absolute URL, got "${value}"`);
+	}
+	if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback(url.hostname))) {
+		throw new Error(`${name} must use https (http is allowed for loopback only): ${value}`);
+	}
+	if (url.username || url.password || url.search || url.hash) {
+		throw new Error(`${name} must not carry credentials, a query or a fragment: ${value}`);
+	}
+	return url.origin + url.pathname.replace(/\/+$/, '');
 }

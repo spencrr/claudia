@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
+import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import type { Config } from './config.ts';
+import { tokenDestination, type Config } from './config.ts';
 import type { Logger } from './log.ts';
 
 const execFileAsync = promisify(execFile);
@@ -34,18 +35,28 @@ const SESSION_TTL_MS = 30 * 60 * 1000;
 /** `GITHUB_TOKEN` wins; otherwise borrow the token the GitHub CLI holds for `githubUser` (or its active account). */
 export async function resolveGitHubToken(config: Pick<Config, 'githubToken' | 'githubUser'>): Promise<string> {
 	if (config.githubToken) {
-		return config.githubToken;
+		return validToken(config.githubToken, 'GITHUB_TOKEN');
 	}
 	const args = ['auth', 'token', ...(config.githubUser ? ['--user', config.githubUser] : [])];
 	let token = '';
 	try {
-		const { stdout } = await execFileAsync('gh', args, { timeout: 10_000, windowsHide: true });
+		// Windows searches the spawn cwd before PATH; a gh.exe planted in an untrusted checkout must not win.
+		const { stdout } = await execFileAsync('gh', args, { timeout: 10_000, windowsHide: true, cwd: homedir() });
 		token = stdout.trim();
 	} catch (err) {
 		throw new Error(`No GitHub token: set GITHUB_TOKEN or run \`gh auth login\` (${describe(err)})`);
 	}
 	if (!token) {
 		throw new Error(`No GitHub token: \`gh ${args.join(' ')}\` returned nothing; set GITHUB_TOKEN or run \`gh auth login\``);
+	}
+	return validToken(token, `gh ${args.join(' ')}`);
+}
+
+/** A token that is not a valid header value would make fetch throw with the token inside the message; refuse it here, without echoing it. */
+function validToken(token: string, source: string): string {
+	// eslint-disable-next-line no-control-regex
+	if (!/^[\x21-\x7e]+$/.test(token)) {
+		throw new Error(`${source} is not a valid token (contains whitespace or control characters)`);
 	}
 	return token;
 }
@@ -115,7 +126,8 @@ async function discover(githubApiUrl: string, token: string, fetch: typeof globa
 	const user = await response.json() as CopilotUserResponse;
 	return {
 		token,
-		apiUrl: (user.endpoints?.api ?? DEFAULT_CAPI_URL).replace(/\/+$/, ''),
+		// Discovery comes from GitHub, but the token goes wherever this says; hold it to the same rule as the overrides.
+		apiUrl: tokenDestination('discovered endpoints.api', user.endpoints?.api ?? DEFAULT_CAPI_URL),
 		login: user.login,
 		plan: user.copilot_plan,
 	};
