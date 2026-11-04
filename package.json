@@ -3,9 +3,6 @@
   "version": "0.2.0",
   "description": "OpenAI-compatible local proxy that routes model calls through your GitHub Copilot subscription",
   "type": "module",
-  "bin": {
-    "claudia": "src/cli.ts"
-  },
   "private": true,
   "license": "MIT",
   "author": "Spencer Schoenberg",
@@ -14,7 +11,7 @@
     "url": "git+https://github.com/spencrr/claudia.git"
   },
   "bin": {
-    "claudia": "src/main.ts"
+    "claudia": "src/cli.ts"
   },
   "engines": {
     "node": ">=22.18"
