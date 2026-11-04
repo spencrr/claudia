@@ -101,8 +101,8 @@ sources natively.
 
 | Tool | Backend | Notes |
 |---|---|---|
-| `web_search` | **GitHub's web search service** — the `web_search` tool of the GitHub MCP server at `{capi}/mcp`, called with the same Copilot token | The backend Copilot CLI uses. One stateless JSON-RPC call per search, ~0.5 s, two ranked results with long snippets and recency. `allowed_domains` / `blocked_domains` become `site:` / `-site:` operators plus a post-filter. Queries stay inside GitHub. |
-| `web_fetch` | Local HTTP GET, HTML → text | The same model Copilot CLI and Claude Code use (both fetch client-side). Refuses loopback, private, link-local/metadata, CGNAT and ULA addresses, re-checks every redirect hop, caps bodies at 1 MB / 100K chars and requests at 30 s. |
+| `web_search` | **GitHub's web search service** — the `web_search` tool of the GitHub MCP server at `{capi}/mcp`, called with the same Copilot token | The backend Copilot CLI uses. One stateless JSON-RPC call per search, ~0.5 s, two ranked results with long snippets and recency. The tool definition's `allowed_domains` / `blocked_domains` are enforced (the model may narrow them, not widen them) as `site:` / `-site:` operators plus a post-filter. Queries go to GitHub's endpoint; what GitHub does with them afterwards is GitHub's policy, not something this proxy can verify. |
+| `web_fetch` | Local HTTP GET, HTML → text | The same model Copilot CLI and Claude Code use (both fetch client-side). Resolves the host once, checks every address against loopback, private, link-local/metadata, CGNAT, ULA, NAT64/6to4 and multicast ranges (IPv4-mapped IPv6 included), connects to the checked address, re-checks every redirect hop, honours the definition's `allowed_domains`, caps bodies at 1 MB / 100K chars and titles at 300 chars, 30 s per fetch, strips control characters. |
 
 Two things deliberately **not** done:
 
@@ -114,8 +114,10 @@ Two things deliberately **not** done:
 * Declaring `web_search` on `/chat/completions` is tolerated for Gemini/GPT-4
   but not executed — the model answers that it has no internet access.
 
-Costs: each search round is one extra model call plus the search; Claude Code's
-`max_uses` (default 5) bounds the loop, capped at 10 rounds.
+Costs: each round of tool calls is one extra model call plus the calls. Each
+tool's `max_uses` (default 5) counts executed calls — a burst of three parallel
+searches is three uses — and calls past it are answered with
+`max_uses_exceeded`; the loop also stops after 10 rounds regardless.
 
 ### Claude Code
 
@@ -226,12 +228,12 @@ All via environment variables.
 |---|---|---|
 | `CLAUDIA_PORT` | `4242` | Listen port |
 | `CLAUDIA_HOST` | `127.0.0.1` | Bind address. Non-loopback **requires** `CLAUDIA_API_KEY`. |
-| `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` or `x-api-key: <key>` |
+| `CLAUDIA_API_KEY` | _(none)_ | If set, clients must send `Authorization: Bearer <key>` or `x-api-key: <key>`. If unset, only local non-browser clients are accepted (requests with an `Origin` header or a non-loopback `Host` get 403). |
 | `GITHUB_TOKEN` | _(from `gh`)_ | GitHub OAuth token with Copilot access |
 | `CLAUDIA_GITHUB_USER` | _(active `gh` account)_ | Borrow the token of a specific `gh` login (`gh auth token --user …`) when several are signed in |
-| `CLAUDIA_GITHUB_API_URL` | `https://api.github.com` | GitHub REST base (GHE: `https://api.<host>`) |
+| `CLAUDIA_GITHUB_API_URL` | `https://api.github.com` | GitHub REST base (GHE: `https://api.<host>`). Must be `https:`. |
 | `CLAUDIA_INTEGRATION_ID` | `vscode-chat` | `Copilot-Integration-Id` header; CAPI gates part of the catalog on it. `none` omits it. |
-| `CLAUDIA_CAPI_URL` | _(discovered)_ | Skip discovery; send everything here (debugging/tests) |
+| `CLAUDIA_CAPI_URL` | _(discovered)_ | Skip discovery; send everything, token included, here. Must be `https:`, or `http:` on a loopback host (debugging/tests). |
 | `CLAUDIA_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 
 ## Development
@@ -248,8 +250,10 @@ npm test            # node --test (unit + end-to-end against a fake CAPI)
   seat may not be covered by your Copilot terms — check before sharing. The
   default `Copilot-Integration-Id: vscode-chat` is what Copilot Chat sends;
   claudia still identifies itself honestly via `User-Agent`.
-* Every request spends your Copilot quota (premium requests / credits). Keep
-  the proxy on loopback or behind `CLAUDIA_API_KEY`.
+* Every request spends your Copilot quota (premium requests / credits). On
+  loopback without a key, browser-originated requests are refused so a web
+  page cannot spend it for you; anything else that can reach the port — or
+  anyone holding `CLAUDIA_API_KEY` — can. See [SECURITY.md](SECURITY.md).
 * Not supported: embeddings, Anthropic hosted tools other than web search /
   fetch (code execution, computer use, memory), models outside the Copilot
   catalog. See [How requests are routed](#how-requests-are-routed) for what
